@@ -35,6 +35,13 @@ class LatencyThroughputTrace : public IFrontEnd, public Implementation {
   bool m_streaming_only = false;
   int m_num_streaming_requests = 0;
 
+  bool m_pim_mode = false;
+  int m_num_pim_requests = 0;
+  bool m_pim_same_bank = true;
+  int m_pim_bank_group_size = 0;
+  int m_pim_burst_length = 1;
+  int m_pim_request_type_id = -1;
+
   // Pointer-chasing state
   int m_num_probe_requests;
   int m_warmup_cycles;
@@ -43,6 +50,7 @@ class LatencyThroughputTrace : public IFrontEnd, public Implementation {
   // Retry state (MESS-style: retry same request on backpressure)
   std::optional<Request> m_retry_stream_req;
   std::optional<Request> m_retry_probe_req;
+  std::optional<Request> m_retry_pim_req;
 
   // PRNG for probe addresses and read/write selection
   std::mt19937_64 m_rng;
@@ -54,6 +62,10 @@ class LatencyThroughputTrace : public IFrontEnd, public Implementation {
   int s_probes_completed = 0;
   int64_t s_total_probe_latency = 0;
   float s_avg_probe_latency = 0.0f;
+  size_t s_pim_sent = 0;
+  int s_pim_completed = 0;
+  int64_t s_total_pim_latency = 0;
+  float s_avg_pim_latency = 0.0f;
 
  public:
   void init() override {
@@ -62,6 +74,12 @@ class LatencyThroughputTrace : public IFrontEnd, public Implementation {
     RAMULATOR_PARSE_PARAM(m_num_probe_requests, int, "num_probe_requests").required();
     RAMULATOR_PARSE_PARAM(m_streaming_only, bool, "streaming_only").default_val(false);
     RAMULATOR_PARSE_PARAM(m_num_streaming_requests, int, "num_streaming_requests").default_val(0);
+    RAMULATOR_PARSE_PARAM(m_pim_mode, bool, "pim_mode").default_val(false);
+    RAMULATOR_PARSE_PARAM(m_num_pim_requests, int, "num_pim_requests").default_val(0);
+    RAMULATOR_PARSE_PARAM(m_pim_same_bank, bool, "pim_same_bank").default_val(true);
+    RAMULATOR_PARSE_PARAM(m_pim_bank_group_size, int, "pim_bank_group_size").default_val(0);
+    RAMULATOR_PARSE_PARAM(m_pim_burst_length, int, "pim_burst_length").default_val(1);
+    RAMULATOR_PARSE_PARAM(m_pim_request_type_id, int, "pim_request_type_id").default_val(-1);
     RAMULATOR_PARSE_PARAM(m_stream_cols, int, "stream_cols").default_val(8);
     RAMULATOR_PARSE_PARAM(m_warmup_cycles, int, "warmup_cycles").default_val(10000);
     RAMULATOR_PARSE_PARAM(m_read_ratio, int, "read_ratio").default_val(100);
@@ -85,11 +103,27 @@ class LatencyThroughputTrace : public IFrontEnd, public Implementation {
       throw std::runtime_error(
           "LatencyThroughputTrace: num_streaming_requests must be set when streaming_only=true");
     }
+    if (m_pim_mode && m_num_pim_requests <= 0) {
+      throw std::runtime_error(
+          "LatencyThroughputTrace: num_pim_requests must be set when pim_mode=true");
+    }
+    if (m_pim_mode && m_pim_request_type_id < 0) {
+      throw std::runtime_error(
+          "LatencyThroughputTrace: pim_request_type_id must be set when pim_mode=true");
+    }
+    if (m_pim_burst_length <= 0) {
+      throw std::runtime_error(
+          "LatencyThroughputTrace: pim_burst_length must be positive");
+    }
 
     m_stats.add("streaming_requests_sent", s_streaming_sent);
     m_stats.add("probe_requests_completed", s_probes_completed);
     m_stats.add("total_probe_latency", s_total_probe_latency);
     m_stats.add("avg_probe_latency", s_avg_probe_latency);
+    m_stats.add("pim_requests_sent", s_pim_sent);
+    m_stats.add("pim_requests_completed", s_pim_completed);
+    m_stats.add("total_pim_latency", s_total_pim_latency);
+    m_stats.add("avg_pim_latency", s_avg_pim_latency);
 
     m_logger.info(fmt::format("LatencyThroughputTrace: nop_counter={}, probes={}, warmup={}, bank_units={}",
                               m_nop_counter, m_num_probe_requests, m_warmup_cycles, m_total_bank_units));
@@ -101,6 +135,11 @@ class LatencyThroughputTrace : public IFrontEnd, public Implementation {
 
   void tick() override {
     m_clk++;
+
+    if (m_pim_mode) {
+      tick_pim();
+      return;
+    }
 
     if (m_streaming_only) {
       // Streaming-only mode: no NOP rate-limiting, no probes.
@@ -125,6 +164,9 @@ class LatencyThroughputTrace : public IFrontEnd, public Implementation {
   }
 
   bool is_finished() override {
+    if (m_pim_mode) {
+      return s_pim_completed >= m_num_pim_requests;
+    }
     if (m_streaming_only) {
       return static_cast<int>(s_streaming_sent) >= m_num_streaming_requests;
     }
@@ -134,6 +176,9 @@ class LatencyThroughputTrace : public IFrontEnd, public Implementation {
   void finalize() override {
     if (s_probes_completed > 0) {
       s_avg_probe_latency = static_cast<float>(s_total_probe_latency) / s_probes_completed;
+    }
+    if (s_pim_completed > 0) {
+      s_avg_pim_latency = static_cast<float>(s_total_pim_latency) / s_pim_completed;
     }
   }
 
@@ -194,6 +239,39 @@ class LatencyThroughputTrace : public IFrontEnd, public Implementation {
     }
   }
 
+  void tick_pim() {
+    if (tick_pim_nop()) {
+      return;
+    }
+
+    if (static_cast<int>(s_pim_sent) >= m_num_pim_requests) {
+      return;
+    }
+
+    if (!m_retry_pim_req) {
+      Request req = make_request(pim_addr_vec(s_pim_sent), m_pim_request_type_id, 0);
+      req.callback = [this](Request& completed) {
+        s_total_pim_latency += (completed.depart - completed.arrive);
+        s_pim_completed++;
+      };
+      m_retry_pim_req = req;
+    }
+
+    if (m_memory_system->send(*m_retry_pim_req)) {
+      s_pim_sent++;
+      m_retry_pim_req.reset();
+    }
+  }
+
+  bool tick_pim_nop() {
+    if (m_nop_counter <= 1) {
+      return false;
+    }
+    bool is_nop = (m_curr_nop != 0);
+    m_curr_nop = (m_curr_nop + 1) % m_nop_counter;
+    return is_nop;
+  }
+
   // Handle stream turn: issue sequential accesses with configurable read/write mix.
   // On backpressure, the request is held in m_retry_stream_req for the next attempt.
   void tick_stream() {
@@ -250,6 +328,22 @@ class LatencyThroughputTrace : public IFrontEnd, public Implementation {
     std::uniform_int_distribution<int> col_dist(0, m_num_cols - 1);
     av[m_row_pos] = row_dist(m_rng);
     av[m_col_pos] = col_dist(m_rng);
+    return av;
+  }
+
+  AddrVec_t pim_addr_vec(size_t idx) {
+    AddrVec_t av(m_addr_vec_size, 0);
+    int flat_bank = 0;
+    if (!m_pim_same_bank && m_total_bank_units > 0) {
+      int group_size = m_total_bank_units;
+      if (m_pim_bank_group_size > 0 && m_pim_bank_group_size < m_total_bank_units) {
+        group_size = m_pim_bank_group_size;
+      }
+      flat_bank = static_cast<int>((idx / m_pim_burst_length) % group_size);
+    }
+    decompose_bank(flat_bank, av);
+    av[m_row_pos] = 0;
+    av[m_col_pos] = 0;
     return av;
   }
 

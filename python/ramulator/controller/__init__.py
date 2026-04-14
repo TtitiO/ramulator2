@@ -7,5 +7,6 @@
 from .generic_ddr import GenericDDR
 from .hbm import HBM
 from .lpddr5 import LPDDR5
+from .lpddr5_pim import LPDDR5PIM
 
-__all__ = ['GenericDDR', 'HBM', 'LPDDR5']
+__all__ = ['GenericDDR', 'HBM', 'LPDDR5', 'LPDDR5PIM']

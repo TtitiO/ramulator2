@@ -5,6 +5,9 @@ namespace Ramulator {
 void DRAMSpec::load_config(const ConfigNode& config) {
   const ConfigNode dram = config["dram"];
 
+  // Optional PIM capacity knob (defaults to 1 for non-PIM configs)
+  pim_blocks_per_bank = dram["pim_blocks_per_bank"].as<int>(1);
+
   // Organization
   channel_width = dram["channel_width"].as<int>();
   ConfigNode org = dram["org"];
