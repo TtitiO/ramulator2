@@ -5,8 +5,27 @@ run_single is a top-level function (not a closure) so it can be pickled
 for ProcessPoolExecutor.
 """
 
+import copy
+
 from tests.latency_throughput.testcases import STANDARDS
 from tests.utils import create_dram, extract_dram_layout
+
+
+def _merge_cfg(base_cfg, override_cfg):
+    merged = copy.deepcopy(base_cfg)
+    for key, value in override_cfg.items():
+        if isinstance(value, dict) and isinstance(merged.get(key), dict):
+            merged[key] = {**merged[key], **value}
+        else:
+            merged[key] = value
+    return merged
+
+
+def resolve_cfg(std_name, cfg_override=None):
+    cfg = copy.deepcopy(STANDARDS[std_name])
+    if cfg_override:
+        cfg = _merge_cfg(cfg, cfg_override)
+    return cfg
 
 
 def _build_controller(cfg, dram, *, full=False):
@@ -34,6 +53,7 @@ def run_single(
     clock_ratio=None,
     stream_cols=None,
     full=False,
+    cfg_override=None,
 ):
     """Run one simulation point and return sim.stats.
 
@@ -42,7 +62,7 @@ def run_single(
     """
     import ramulator
 
-    cfg = STANDARDS[std_name]
+    cfg = resolve_cfg(std_name, cfg_override=cfg_override)
     if clock_ratio is None:
         clock_ratio = cfg["frontend_clock_ratio"]
     if stream_cols is None:
@@ -50,6 +70,9 @@ def run_single(
     pim_mode = cfg.get("pim_mode", False)
     num_pim_requests = cfg.get("num_pim_requests", 0)
     pim_same_bank = cfg.get("pim_same_bank", True)
+    pim_dependency_count = cfg.get("pim_dependency_count", 1)
+    pim_bank_group_size = cfg.get("pim_bank_group_size", 0)
+    pim_burst_length = cfg.get("pim_burst_length", 1)
 
     dram = create_dram(cfg)
     layout = extract_dram_layout(dram)
@@ -65,6 +88,9 @@ def run_single(
         pim_mode=pim_mode,
         num_pim_requests=num_pim_requests,
         pim_same_bank=pim_same_bank,
+        pim_dependency_count=pim_dependency_count,
+        pim_bank_group_size=pim_bank_group_size,
+        pim_burst_length=pim_burst_length,
         pim_request_type_id=pim_request_type_id,
         warmup_cycles=warmup,
         seed=12345,
@@ -86,7 +112,7 @@ def run_single(
     return sim.stats
 
 
-def run_streaming_only(std_name, num_requests=50000, full=False):
+def run_streaming_only(std_name, num_requests=50000, full=False, cfg_override=None):
     """Run a streaming-only simulation (no probes) at maximum throughput.
 
     Fires sequential read requests as fast as the memory system can accept
@@ -96,12 +122,15 @@ def run_streaming_only(std_name, num_requests=50000, full=False):
     """
     import ramulator
 
-    cfg = STANDARDS[std_name]
+    cfg = resolve_cfg(std_name, cfg_override=cfg_override)
     clock_ratio = cfg["frontend_clock_ratio"]
     stream_cols = cfg["stream_cols"]
     pim_mode = cfg.get("pim_mode", False)
     num_pim_requests = cfg.get("num_pim_requests", 0)
     pim_same_bank = cfg.get("pim_same_bank", True)
+    pim_dependency_count = cfg.get("pim_dependency_count", 1)
+    pim_bank_group_size = cfg.get("pim_bank_group_size", 0)
+    pim_burst_length = cfg.get("pim_burst_length", 1)
 
     dram = create_dram(cfg)
     layout = extract_dram_layout(dram)
@@ -119,6 +148,9 @@ def run_streaming_only(std_name, num_requests=50000, full=False):
         pim_mode=pim_mode,
         num_pim_requests=num_pim_requests,
         pim_same_bank=pim_same_bank,
+        pim_dependency_count=pim_dependency_count,
+        pim_bank_group_size=pim_bank_group_size,
+        pim_burst_length=pim_burst_length,
         pim_request_type_id=pim_request_type_id,
         read_ratio=100,
         stream_cols=stream_cols,

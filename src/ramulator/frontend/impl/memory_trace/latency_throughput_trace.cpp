@@ -40,6 +40,7 @@ class LatencyThroughputTrace : public IFrontEnd, public Implementation {
   bool m_pim_same_bank = true;
   int m_pim_bank_group_size = 0;
   int m_pim_burst_length = 1;
+  int m_pim_dependency_count = 1;
   int m_pim_request_type_id = -1;
 
   // Pointer-chasing state
@@ -79,6 +80,7 @@ class LatencyThroughputTrace : public IFrontEnd, public Implementation {
     RAMULATOR_PARSE_PARAM(m_pim_same_bank, bool, "pim_same_bank").default_val(true);
     RAMULATOR_PARSE_PARAM(m_pim_bank_group_size, int, "pim_bank_group_size").default_val(0);
     RAMULATOR_PARSE_PARAM(m_pim_burst_length, int, "pim_burst_length").default_val(1);
+    RAMULATOR_PARSE_PARAM(m_pim_dependency_count, int, "pim_dependency_count").default_val(1);
     RAMULATOR_PARSE_PARAM(m_pim_request_type_id, int, "pim_request_type_id").default_val(-1);
     RAMULATOR_PARSE_PARAM(m_stream_cols, int, "stream_cols").default_val(8);
     RAMULATOR_PARSE_PARAM(m_warmup_cycles, int, "warmup_cycles").default_val(10000);
@@ -114,6 +116,14 @@ class LatencyThroughputTrace : public IFrontEnd, public Implementation {
     if (m_pim_burst_length <= 0) {
       throw std::runtime_error(
           "LatencyThroughputTrace: pim_burst_length must be positive");
+    }
+    if (m_pim_dependency_count <= 0) {
+      throw std::runtime_error(
+          "LatencyThroughputTrace: pim_dependency_count must be positive");
+    }
+    if (m_pim_dependency_count > m_num_cols) {
+      throw std::runtime_error(
+          "LatencyThroughputTrace: pim_dependency_count cannot exceed num_cols");
     }
 
     m_stats.add("streaming_requests_sent", s_streaming_sent);
@@ -334,6 +344,7 @@ class LatencyThroughputTrace : public IFrontEnd, public Implementation {
   AddrVec_t pim_addr_vec(size_t idx) {
     AddrVec_t av(m_addr_vec_size, 0);
     int flat_bank = 0;
+    int dep_ctx = 0;
     if (!m_pim_same_bank && m_total_bank_units > 0) {
       int group_size = m_total_bank_units;
       if (m_pim_bank_group_size > 0 && m_pim_bank_group_size < m_total_bank_units) {
@@ -341,9 +352,12 @@ class LatencyThroughputTrace : public IFrontEnd, public Implementation {
       }
       flat_bank = static_cast<int>((idx / m_pim_burst_length) % group_size);
     }
+    if (m_pim_same_bank && m_pim_dependency_count > 1) {
+      dep_ctx = static_cast<int>((idx / m_pim_burst_length) % m_pim_dependency_count);
+    }
     decompose_bank(flat_bank, av);
     av[m_row_pos] = 0;
-    av[m_col_pos] = 0;
+    av[m_col_pos] = dep_ctx;
     return av;
   }
 

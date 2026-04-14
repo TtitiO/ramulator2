@@ -6,6 +6,9 @@
  *
  * Regenerate:   python -m ramulator codegen LPDDR5PIM
  ******************************************************************************/
+#include "ramulator/dram/dram_spec.h"
+
+#include "ramulator/dram/commands/populate.h"
 #include "ramulator/dram/commands/ACT1.h"
 #include "ramulator/dram/commands/ACT2.h"
 #include "ramulator/dram/commands/CAS_RD.h"
@@ -19,8 +22,6 @@
 #include "ramulator/dram/commands/REFpb.h"
 #include "ramulator/dram/commands/WR.h"
 #include "ramulator/dram/commands/WRA.h"
-#include "ramulator/dram/commands/populate.h"
-#include "ramulator/dram/dram_spec.h"
 
 namespace Ramulator {
 
@@ -37,45 +38,16 @@ class LPDDR5PIM : public DRAMSpec {
   };
   struct Timing {
     enum : int {
-      rate,
-      nBL,
-      nCL,
-      nRCD,
-      nRP,
-      nRPab,
-      nRAS,
-      nRC,
-      nWR,
-      nRTP,
-      nCWL,
-      nPPD,
-      nCCDS,
-      nCCDL,
-      nCCDS_WR,
-      nCCDL_WR,
-      nRRDS,
-      nRRDL,
-      nWTRS,
-      nWTRL,
-      nFAW,
-      nRFC,
-      nRFCpb,
-      nREFI,
-      nREFIpb,
-      nWCKPST,
-      nCAS,
-      nAAD,
-      nCS,
-      tCK_ps,
-      nPIM_MAC_LAT,
-      COUNT
+    rate, nBL, nCL, nRCD, nRP, nRPab, nRAS, nRC, nWR, nRTP, nCWL, nPPD, nCCDS, nCCDL, nCCDS_WR, nCCDL_WR, nRRDS,
+    nRRDL, nWTRS, nWTRL, nFAW, nRFC, nRFCpb, nREFI, nREFIpb, nWCKPST, nCAS, nAAD, nCS, tCK_ps, nPIM_MAC_LAT, COUNT
     };
   };
 
-  using CommandImpls = std::tuple<Cmd::ACT1<LPDDR5PIM>, Cmd::ACT2<LPDDR5PIM>, Cmd::PREpb<LPDDR5PIM>,
-                                  Cmd::PREab<LPDDR5PIM>, Cmd::CAS_RD<LPDDR5PIM>, Cmd::CAS_WR<LPDDR5PIM>,
-                                  Cmd::RD<LPDDR5PIM>, Cmd::WR<LPDDR5PIM>, Cmd::RDA<LPDDR5PIM>, Cmd::WRA<LPDDR5PIM>,
-                                  Cmd::REFab<LPDDR5PIM>, Cmd::REFpb<LPDDR5PIM>, Cmd::PIM_MAC<LPDDR5PIM> >;
+  using CommandImpls = std::tuple<
+      Cmd::ACT1<LPDDR5PIM>, Cmd::ACT2<LPDDR5PIM>, Cmd::PREpb<LPDDR5PIM>, Cmd::PREab<LPDDR5PIM>,
+      Cmd::CAS_RD<LPDDR5PIM>, Cmd::CAS_WR<LPDDR5PIM>, Cmd::RD<LPDDR5PIM>, Cmd::WR<LPDDR5PIM>, Cmd::RDA<LPDDR5PIM>,
+      Cmd::WRA<LPDDR5PIM>, Cmd::REFab<LPDDR5PIM>, Cmd::REFpb<LPDDR5PIM>, Cmd::PIM_MAC<LPDDR5PIM>
+  >;
 
   LPDDR5PIM(const ConfigNode& config) {
     // Counts
@@ -86,30 +58,28 @@ class LPDDR5PIM : public DRAMSpec {
 
     // String name maps + reverse lookup vectors
     set_names(levels, level_names, {"Channel", "Rank", "BankGroup", "Bank", "Row", "Column"});
-    set_names(
-        commands, command_names,
-        {"ACT1", "ACT2", "PREpb", "PREab", "CAS_RD", "CAS_WR", "RD", "WR", "RDA", "WRA", "REFab", "REFpb", "PIM_MAC"});
+    set_names(commands, command_names, {"ACT1", "ACT2", "PREpb", "PREab", "CAS_RD", "CAS_WR", "RD", "WR", "RDA", "WRA", "REFab", "REFpb", "PIM_MAC"});
     set_names(states, state_names, {"Opened", "Closed", "Activating", "N_A"});
-    set_names(timings, timing_names,
-              {"rate",    "nBL",     "nCL",   "nRCD",  "nRP",   "nRPab",  "nRAS",        "nRC",
-               "nWR",     "nRTP",    "nCWL",  "nPPD",  "nCCDS", "nCCDL",  "nCCDS_WR",    "nCCDL_WR",
-               "nRRDS",   "nRRDL",   "nWTRS", "nWTRL", "nFAW",  "nRFC",   "nRFCpb",      "nREFI",
-               "nREFIpb", "nWCKPST", "nCAS",  "nAAD",  "nCS",   "tCK_ps", "nPIM_MAC_LAT"});
+    set_names(timings, timing_names, {
+        "rate", "nBL", "nCL", "nRCD", "nRP", "nRPab", "nRAS", "nRC", "nWR", "nRTP", "nCWL", "nPPD", "nCCDS", "nCCDL",
+        "nCCDS_WR", "nCCDL_WR", "nRRDS", "nRRDL", "nWTRS", "nWTRL", "nFAW", "nRFC", "nRFCpb", "nREFI", "nREFIpb",
+        "nWCKPST", "nCAS", "nAAD", "nCS", "tCK_ps", "nPIM_MAC_LAT"
+    });
 
     // Static spec data
     internal_prefetch_size = 16;
     init_states = {
-        State::N_A,     // Channel
-        State::N_A,     // Rank
-        State::N_A,     // BankGroup
-        State::Closed,  // Bank
-        State::Closed,  // Row
-        State::N_A,     // Column
+        State::N_A,           // Channel
+        State::N_A,           // Rank
+        State::N_A,           // BankGroup
+        State::Closed,        // Bank
+        State::Closed,        // Row
+        State::N_A,           // Column
     };
     supported_requests = {
-        Command::RD,       // Read -> RD
-        Command::WR,       // Write -> WR
-        Command::PIM_MAC,  // PIMCompute -> PIM_MAC
+        Command::RD,        // Read -> RD
+        Command::WR,        // Write -> WR
+        Command::PIM_MAC,   // PIMCompute -> PIM_MAC
     };
 
     // Runtime config (organization, timing values, timing constraints)

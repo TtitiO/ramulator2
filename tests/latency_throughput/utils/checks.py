@@ -154,14 +154,79 @@ def check_pim_latency_throughput(curves):
     )
     measured_latency_ns = curve_100["pim_lat"][max_idx]
     measured_throughput = curve_100["pim_throughput"][max_idx]
-    stalls = curve_100["pim_capacity_stalls"][max_idx]
+    capacity_stalls = curve_100["pim_capacity_stalls"][max_idx]
+    dependency_stalls = curve_100["pim_dependency_stalls"][max_idx]
+    num_pim_reqs_served = curve_100["num_pim_reqs_served"][max_idx]
 
     assert measured_latency_ns > 0
     assert measured_throughput > 0
+    assert num_pim_reqs_served > 0
 
     return {
+        "avg_pim_latency": measured_latency_ns,
         "measured_latency_ns": measured_latency_ns,
         "measured_throughput": measured_throughput,
-        "pim_capacity_stalls": stalls,
+        "num_pim_reqs_served": num_pim_reqs_served,
+        "pim_capacity_stalls": capacity_stalls,
+        "pim_dependency_stalls": dependency_stalls,
         "nop": curve_100["nops"][max_idx],
+    }
+
+
+def check_pim_dependency_pattern_movement(dependent_result, independent_result):
+    latency_improved = independent_result["avg_pim_latency"] < dependent_result["avg_pim_latency"]
+    throughput_improved = independent_result["measured_throughput"] > dependent_result["measured_throughput"]
+    assert latency_improved or throughput_improved
+
+    return {
+        "latency_improved": latency_improved,
+        "throughput_improved": throughput_improved,
+        "latency_delta_ns": independent_result["avg_pim_latency"] - dependent_result["avg_pim_latency"],
+        "throughput_delta": independent_result["measured_throughput"] - dependent_result["measured_throughput"],
+        "dependency_stall_delta": independent_result["pim_dependency_stalls"]
+        - dependent_result["pim_dependency_stalls"],
+        "capacity_stall_delta": independent_result["pim_capacity_stalls"]
+        - dependent_result["pim_capacity_stalls"],
+        "served_delta": independent_result["num_pim_reqs_served"] - dependent_result["num_pim_reqs_served"],
+    }
+
+
+def curves_to_nop_dict(curves, read_ratio=100):
+    """Convert PIM curves (indexed by position) to a dict keyed by NOP value.
+
+    Args:
+        curves: dict from extract_pim_curves(), e.g. {100: {...}}
+        read_ratio: which read_ratio curve to use (default 100 for PIM)
+
+    Returns:
+        {nop: {avg_pim_latency, measured_throughput, pim_dependency_stalls,
+               pim_capacity_stalls, num_pim_reqs_served}}
+    """
+    curve = curves[read_ratio]
+    nop_dict = {}
+    for i, nop in enumerate(curve["nops"]):
+        nop_dict[nop] = {
+            "avg_pim_latency": curve["avg_pim_latency_ns"][i],
+            "measured_throughput": curve["pim_throughput"][i],
+            "pim_dependency_stalls": curve["pim_dependency_stalls"][i],
+            "pim_capacity_stalls": curve["pim_capacity_stalls"][i],
+            "num_pim_reqs_served": curve["num_pim_reqs_served"][i],
+            "nop": nop,
+        }
+    return nop_dict
+
+
+def compare_at_same_nop(dep_point, ind_point):
+    """Compare dependent vs independent at the same NOP value.
+
+    Returns dict with both values and deltas.
+    """
+    return {
+        "dependent": dep_point,
+        "independent": ind_point,
+        "latency_delta_ns": ind_point["avg_pim_latency"] - dep_point["avg_pim_latency"],
+        "throughput_delta": ind_point["measured_throughput"] - dep_point["measured_throughput"],
+        "dependency_stall_delta": ind_point["pim_dependency_stalls"] - dep_point["pim_dependency_stalls"],
+        "capacity_stall_delta": ind_point["pim_capacity_stalls"] - dep_point["pim_capacity_stalls"],
+        "served_delta": ind_point["num_pim_reqs_served"] - dep_point["num_pim_reqs_served"],
     }

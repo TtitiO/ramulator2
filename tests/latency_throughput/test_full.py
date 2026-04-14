@@ -11,6 +11,9 @@ from tests.latency_throughput.runner import run_streaming_only
 @pytest.mark.parametrize("standard", sorted(STANDARDS.keys()))
 def test_streaming_with_refresh_full(standard):
     """Run a long refresh-enabled streaming test and print the results."""
+    if STANDARDS[standard].get("pim_mode", False):
+        pytest.skip("full streaming refresh check is only defined for non-PIM bandwidth cases")
+
     stats = run_streaming_only(
         standard,
         num_requests=STANDARDS[standard]["full_streaming_requests"],

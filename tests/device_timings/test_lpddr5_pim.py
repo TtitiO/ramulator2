@@ -42,7 +42,7 @@ def test_pim_mac_requires_act1_then_act2_before_timing_gate():
     assert ontime.ready is True
 
 
-def test_pim_mac_to_pim_mac_gap_respects_npim_mac_lat():
+def test_pim_mac_to_pim_mac_gap_respects_npim_mac_lat_for_launch_legality():
     dut = make_dut()
     a = dut.addr_vec(Rank=0, BankGroup=0, Bank=0, Row=7, Column=0)
 
@@ -51,6 +51,9 @@ def test_pim_mac_to_pim_mac_gap_respects_npim_mac_lat():
     first_mac_clk = 1 + dut.timings["nRCD"]
     dut.issue("PIM_MAC", a, clk=first_mac_clk)
 
+    # This is a device-level launch-timing check only. Controller tests own the
+    # post-issue execution-overlap behavior because in-flight residency is not
+    # visible through DeviceUnderTest probes.
     early = dut.probe("PIM_MAC", a, clk=first_mac_clk + dut.timings["nPIM_MAC_LAT"] - 1)
     ontime = dut.probe("PIM_MAC", a, clk=first_mac_clk + dut.timings["nPIM_MAC_LAT"])
 

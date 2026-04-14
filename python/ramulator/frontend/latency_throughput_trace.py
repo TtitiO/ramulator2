@@ -22,6 +22,7 @@ class LatencyThroughputTrace(Component):
     pim_same_bank = Param(bool, default=True)
     pim_bank_group_size = Param(int, default=0)
     pim_burst_length = Param(int, default=1)
+    pim_dependency_count = Param(int, default=1)
     pim_request_type_id = Param(int, default=-1)
     stream_cols = Param(int, default=8)
     warmup_cycles = Param(int, default=10000)

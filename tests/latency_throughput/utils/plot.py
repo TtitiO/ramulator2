@@ -222,3 +222,196 @@ def plot_pim_lat_tp(
     plt.savefig(png_path, dpi=300, bbox_inches="tight")
     plt.close(fig)
     return png_path
+
+
+def plot_pim_dependency_pattern_same_nop(
+    dependency_pattern_results,
+    std_name,
+    output_dir="tests/latency_throughput/plots/fast",
+):
+    """Generate same-NOP dependency-pattern comparison PNG plots.
+
+    Returns a dict with file paths for latency, throughput, and dependency-stall plots.
+    """
+
+    os.makedirs(output_dir, exist_ok=True)
+
+    dep_nop_dict = dependency_pattern_results["same_bank_dependent"]["nop_dict"]
+    ind_nop_dict = dependency_pattern_results["same_bank_independent"]["nop_dict"]
+    common_nops = sorted(set(dep_nop_dict.keys()) & set(ind_nop_dict.keys()))
+
+    if not common_nops:
+        raise ValueError("No common NOP values found for dependency-pattern comparison")
+
+    dep_lat = [dep_nop_dict[nop]["avg_pim_latency"] for nop in common_nops]
+    ind_lat = [ind_nop_dict[nop]["avg_pim_latency"] for nop in common_nops]
+    dep_tp = [dep_nop_dict[nop]["measured_throughput"] for nop in common_nops]
+    ind_tp = [ind_nop_dict[nop]["measured_throughput"] for nop in common_nops]
+    dep_stalls = [dep_nop_dict[nop]["pim_dependency_stalls"] for nop in common_nops]
+    ind_stalls = [ind_nop_dict[nop]["pim_dependency_stalls"] for nop in common_nops]
+
+    def make_plot(y_dep, y_ind, title, ylabel, filename):
+        fig, ax = plt.subplots(figsize=(6.8, 4.4))
+        fig.patch.set_facecolor("white")
+        ax.set_facecolor("white")
+        ax.plot(
+            common_nops,
+            y_dep,
+            "o-",
+            color="#1f77b4",
+            linewidth=1.8,
+            markersize=4.5,
+            label="dependent",
+            zorder=3,
+        )
+        ax.plot(
+            common_nops,
+            y_ind,
+            "s-",
+            color="#ff7f0e",
+            linewidth=1.8,
+            markersize=4.5,
+            label="independent",
+            zorder=3,
+        )
+        ax.set_title(title, fontsize=13, pad=10)
+        ax.set_xlabel("NOP", fontsize=11, labelpad=6)
+        ax.set_ylabel(ylabel, fontsize=11, labelpad=6)
+        ax.grid(True, linestyle="--", linewidth=0.7, alpha=0.35)
+        ax.tick_params(axis="both", which="major", labelsize=9.5)
+        for spine in ax.spines.values():
+            spine.set_linewidth(1.0)
+        ax.margins(x=0.04, y=0.08)
+        legend = ax.legend(
+            loc="best",
+            fontsize=9.5,
+            frameon=True,
+            framealpha=0.95,
+            edgecolor="#888",
+            borderpad=0.5,
+            handlelength=2.0,
+        )
+        legend.get_frame().set_linewidth(0.9)
+        fig.tight_layout(pad=1.0)
+        path = os.path.join(output_dir, filename)
+        fig.savefig(path, dpi=300, bbox_inches="tight", pad_inches=0.08)
+        plt.close(fig)
+        return path
+
+    lat_path = make_plot(
+        dep_lat,
+        ind_lat,
+        "PIM Dependency Pattern: Latency vs NOP",
+        "Avg PIM Latency (ns)",
+        f"{std_name}_dependency_pattern_latency_vs_nop.png",
+    )
+    tp_path = make_plot(
+        dep_tp,
+        ind_tp,
+        "PIM Dependency Pattern: Throughput vs NOP",
+        "Measured Throughput (req/ns)",
+        f"{std_name}_dependency_pattern_throughput_vs_nop.png",
+    )
+    stalls_path = make_plot(
+        dep_stalls,
+        ind_stalls,
+        "PIM Dependency Pattern: Dependency Stalls vs NOP",
+        "PIM Dependency Stalls",
+        f"{std_name}_dependency_pattern_dependency_stalls_vs_nop.png",
+    )
+
+    return {
+        "latency_vs_nop": lat_path,
+        "throughput_vs_nop": tp_path,
+        "dependency_stalls_vs_nop": stalls_path,
+    }
+
+
+def plot_pim_dependency_pattern_same_nop_plotly(
+    dependency_pattern_results,
+    std_name,
+    output_dir="tests/latency_throughput/plots/fast",
+):
+    """Generate same-NOP dependency-pattern comparison HTML plots (Plotly).
+
+    Returns a dict with file paths for latency, throughput, and dependency-stall plots.
+    """
+    import plotly.graph_objects as go
+
+    os.makedirs(output_dir, exist_ok=True)
+
+    dep_nop_dict = dependency_pattern_results["same_bank_dependent"]["nop_dict"]
+    ind_nop_dict = dependency_pattern_results["same_bank_independent"]["nop_dict"]
+    common_nops = sorted(set(dep_nop_dict.keys()) & set(ind_nop_dict.keys()))
+
+    if not common_nops:
+        raise ValueError("No common NOP values found for dependency-pattern comparison")
+
+    dep_lat = [dep_nop_dict[nop]["avg_pim_latency"] for nop in common_nops]
+    ind_lat = [ind_nop_dict[nop]["avg_pim_latency"] for nop in common_nops]
+    dep_tp = [dep_nop_dict[nop]["measured_throughput"] for nop in common_nops]
+    ind_tp = [ind_nop_dict[nop]["measured_throughput"] for nop in common_nops]
+    dep_stalls = [dep_nop_dict[nop]["pim_dependency_stalls"] for nop in common_nops]
+    ind_stalls = [ind_nop_dict[nop]["pim_dependency_stalls"] for nop in common_nops]
+
+    def make_plotly(y_dep, y_ind, title, ylabel, filename):
+        fig = go.Figure()
+        fig.add_trace(
+            go.Scatter(
+                x=common_nops,
+                y=y_dep,
+                mode="lines+markers",
+                name="dependent (dependency_count=1)",
+                line=dict(color="#1f77b4", width=2),
+                marker=dict(size=8),
+            )
+        )
+        fig.add_trace(
+            go.Scatter(
+                x=common_nops,
+                y=y_ind,
+                mode="lines+markers",
+                name="independent (dependency_count=2)",
+                line=dict(color="#ff7f0e", width=2),
+                marker=dict(size=8),
+            )
+        )
+        fig.update_layout(
+            title=title,
+            xaxis_title="NOP",
+            yaxis_title=ylabel,
+            template="plotly_white",
+            hovermode="x unified",
+            legend=dict(x=0.01, y=0.99, borderwidth=1),
+        )
+        path = os.path.join(output_dir, filename)
+        fig.write_html(path)
+        return path
+
+    lat_path = make_plotly(
+        dep_lat,
+        ind_lat,
+        "PIM Dependency Pattern: Latency vs NOP",
+        "Avg PIM Latency (ns)",
+        f"{std_name}_dependency_pattern_latency_vs_nop.html",
+    )
+    tp_path = make_plotly(
+        dep_tp,
+        ind_tp,
+        "PIM Dependency Pattern: Throughput vs NOP",
+        "Measured Throughput (req/ns)",
+        f"{std_name}_dependency_pattern_throughput_vs_nop.html",
+    )
+    stalls_path = make_plotly(
+        dep_stalls,
+        ind_stalls,
+        "PIM Dependency Pattern: Dependency Stalls vs NOP",
+        "PIM Dependency Stalls",
+        f"{std_name}_dependency_pattern_dependency_stalls_vs_nop.html",
+    )
+
+    return {
+        "latency_vs_nop": lat_path,
+        "throughput_vs_nop": tp_path,
+        "dependency_stalls_vs_nop": stalls_path,
+    }

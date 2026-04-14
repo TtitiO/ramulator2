@@ -19,6 +19,7 @@ def run_sweep(
     warmup=10000,
     max_workers=4,
     full=False,
+    cfg_override=None,
 ):
     """Run a parallel NOP x read_ratio sweep.
 
@@ -39,6 +40,7 @@ def run_sweep(
                 num_probes=num_probes,
                 warmup=warmup,
                 full=full,
+                cfg_override=cfg_override,
             ): (nop, rr)
             for nop, rr in jobs
         }
@@ -114,7 +116,12 @@ def extract_pim_curves(raw_results, std_name):
     curves = {}
     for rr, entries in sorted(by_rr.items()):
         entries.sort(key=lambda x: -x[0])
-        latency_list, throughput_list, nop_list, stalls_list = [], [], [], []
+        latency_list = []
+        throughput_list = []
+        nop_list = []
+        capacity_stalls_list = []
+        dependency_stalls_list = []
+        served_list = []
         for nop, stats in entries:
             ctrl = stats["memory_system"]["controller"]
             cycles = ctrl["cycles"]
@@ -124,13 +131,18 @@ def extract_pim_curves(raw_results, std_name):
 
             latency_list.append(avg_latency)
             throughput_list.append(throughput)
-            stalls_list.append(ctrl["pim_capacity_stalls"])
+            capacity_stalls_list.append(ctrl["pim_capacity_stalls"])
+            dependency_stalls_list.append(ctrl.get("pim_dependency_stalls", 0))
+            served_list.append(completed)
             nop_list.append(nop)
 
         curves[rr] = {
             "pim_lat": latency_list,
             "pim_throughput": throughput_list,
-            "pim_capacity_stalls": stalls_list,
+            "avg_pim_latency_ns": latency_list,
+            "num_pim_reqs_served": served_list,
+            "pim_capacity_stalls": capacity_stalls_list,
+            "pim_dependency_stalls": dependency_stalls_list,
             "nops": nop_list,
         }
 
