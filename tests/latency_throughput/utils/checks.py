@@ -144,3 +144,24 @@ def check_streaming_bandwidth(std_name, streaming_stats):
         "measured_streaming_bw": measured_bw,
         "deviation_from_achievable_pct": deviation_pct,
     }
+
+
+def check_pim_latency_throughput(curves):
+    curve_100 = curves[100]
+    max_idx = max(
+        range(len(curve_100["pim_throughput"])),
+        key=lambda idx: curve_100["pim_throughput"][idx],
+    )
+    measured_latency_ns = curve_100["pim_lat"][max_idx]
+    measured_throughput = curve_100["pim_throughput"][max_idx]
+    stalls = curve_100["pim_capacity_stalls"][max_idx]
+
+    assert measured_latency_ns > 0
+    assert measured_throughput > 0
+
+    return {
+        "measured_latency_ns": measured_latency_ns,
+        "measured_throughput": measured_throughput,
+        "pim_capacity_stalls": stalls,
+        "nop": curve_100["nops"][max_idx],
+    }

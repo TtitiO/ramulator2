@@ -342,7 +342,7 @@ def generate_dram_init(standards):
     ]
     all_names = []
     for name in sorted(standards):
-        mod_name = name.lower()
+        mod_name = _class_to_module_name(name)
         lines.append(f"from .{mod_name} import {name}")
         all_names.append(name)
     lines.append("")

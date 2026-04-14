@@ -7,6 +7,7 @@ from tests.smoke.testcases.hbm import CONFIG as HBM1_CONFIG
 from tests.smoke.testcases.hbm2 import CONFIG as HBM2_CONFIG
 from tests.smoke.testcases.hbm3 import CONFIG as HBM3_CONFIG
 from tests.smoke.testcases.lpddr5 import CONFIG as LPDDR5_CONFIG
+from tests.smoke.testcases.lpddr5_pim import CONFIG as LPDDR5_PIM_CONFIG
 
 STANDARDS = {
     "DDR3": DDR3_CONFIG,
@@ -16,4 +17,5 @@ STANDARDS = {
     "HBM2": HBM2_CONFIG,
     "HBM3": HBM3_CONFIG,
     "LPDDR5": LPDDR5_CONFIG,
+    "LPDDR5PIM": LPDDR5_PIM_CONFIG,
 }

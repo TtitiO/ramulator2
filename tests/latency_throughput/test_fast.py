@@ -5,11 +5,12 @@ import pytest
 from tests.latency_throughput.testcases import STANDARDS
 from tests.latency_throughput.utils.checks import (
     check_peak_bandwidth,
+    check_pim_latency_throughput,
     check_streaming_peak_bandwidth,
     check_unloaded_latency,
 )
-from tests.latency_throughput.utils.plot import plot_lat_tp
-from tests.latency_throughput.utils.sweep import extract_curves, run_sweep
+from tests.latency_throughput.utils.plot import plot_lat_tp, plot_pim_lat_tp
+from tests.latency_throughput.utils.sweep import extract_curves, extract_pim_curves, run_sweep
 from tests.latency_throughput.runner import run_streaming_only
 
 # Sweep parameters
@@ -27,13 +28,18 @@ def _get_sweep(std_name):
     if std_name not in _sweep_cache:
         nops = STANDARDS[std_name]["nop_counters"]
         raw = run_sweep(std_name, nops, CI_READ_RATIOS, CI_NUM_PROBES, full=False)
-        curves = extract_curves(raw, std_name)
+        if STANDARDS[std_name].get("pim_mode", False):
+            curves = extract_pim_curves(raw, std_name)
+        else:
+            curves = extract_curves(raw, std_name)
         _sweep_cache[std_name] = curves
     return _sweep_cache[std_name]
 
 
 def _get_streaming(std_name):
     """Run streaming-only once per standard, cache for reuse."""
+    if STANDARDS[std_name].get("pim_mode", False):
+        return None
     if std_name not in _streaming_cache:
         _streaming_cache[std_name] = run_streaming_only(std_name, full=False)
     return _streaming_cache[std_name]
@@ -45,6 +51,29 @@ def test_latency_throughput_fast(request, standard):
     """Run no-refresh formula checks, print % deviations, generate lat-tp plot."""
     verbose = request.config.getoption("--verbose-plot")
     curves = _get_sweep(standard)
+    pim_mode = STANDARDS[standard].get("pim_mode", False)
+
+    if pim_mode:
+        pim_result = check_pim_latency_throughput(curves)
+
+        print(f"\n{'=' * 60}")
+        print(f"  {standard} Fast PIM Latency-Throughput Results")
+        print(f"{'=' * 60}")
+        print(f"  Measured PIMCompute latency = {pim_result['measured_latency_ns']:.1f} ns")
+        print(
+            f"  Measured PIMCompute throughput = {pim_result['measured_throughput']:.6f} requests/ns"
+        )
+        print(f"  PIM capacity stalls = {pim_result['pim_capacity_stalls']}")
+        print(f"{'=' * 60}")
+
+        output_dir = "tests/latency_throughput/plots/fast"
+        if verbose:
+            output_dir = "tests/latency_throughput/plots/fast_verbose"
+
+        png_path = plot_pim_lat_tp(curves, standard, output_dir=output_dir)
+        print(f"  Plot saved: {png_path}")
+        return
+
     streaming_stats = _get_streaming(standard)
 
     lat_result = check_unloaded_latency(curves, standard)

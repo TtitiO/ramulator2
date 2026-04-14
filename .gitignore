@@ -50,5 +50,6 @@ gprof*/
 *.out
 *.json
 bench_all_standards.py
-build-bench/
-build-perf/
+build*/
+.DS_Store
+

@@ -91,6 +91,7 @@ struct DRAMSpec {
   int internal_prefetch_size = -1;
   int channel_width = -1;
   Clk_t read_latency = -1;
+  int pim_blocks_per_bank = 1;
 
   // Per-level/command arrays
   Organization organization;

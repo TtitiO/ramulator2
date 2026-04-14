@@ -11,5 +11,6 @@ from .hbm1 import HBM1
 from .hbm2 import HBM2
 from .hbm3 import HBM3
 from .lpddr5 import LPDDR5
+from .lpddr5_pim import LPDDR5PIM
 
-__all__ = ['DDR3', 'DDR4', 'DDR5', 'HBM1', 'HBM2', 'HBM3', 'LPDDR5']
+__all__ = ['DDR3', 'DDR4', 'DDR5', 'HBM1', 'HBM2', 'HBM3', 'LPDDR5', 'LPDDR5PIM']

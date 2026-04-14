@@ -99,3 +99,39 @@ def extract_curves(raw_results, std_name):
         curves[rr] = {"bw": bw_list, "lat": lat_list, "nops": nop_list}
 
     return curves
+
+
+def extract_pim_curves(raw_results, std_name):
+    from tests.latency_throughput.utils.spec import resolve_spec
+
+    spec = resolve_spec(std_name)
+    time_unit_ns = spec["time_unit_ns"]
+
+    by_rr = defaultdict(list)
+    for (nop, rr), stats in raw_results.items():
+        by_rr[rr].append((nop, stats))
+
+    curves = {}
+    for rr, entries in sorted(by_rr.items()):
+        entries.sort(key=lambda x: -x[0])
+        latency_list, throughput_list, nop_list, stalls_list = [], [], [], []
+        for nop, stats in entries:
+            ctrl = stats["memory_system"]["controller"]
+            cycles = ctrl["cycles"]
+            completed = ctrl["num_pim_reqs_served"]
+            avg_latency = ctrl["avg_pim_latency"] * time_unit_ns
+            throughput = completed / (cycles * time_unit_ns)
+
+            latency_list.append(avg_latency)
+            throughput_list.append(throughput)
+            stalls_list.append(ctrl["pim_capacity_stalls"])
+            nop_list.append(nop)
+
+        curves[rr] = {
+            "pim_lat": latency_list,
+            "pim_throughput": throughput_list,
+            "pim_capacity_stalls": stalls_list,
+            "nops": nop_list,
+        }
+
+    return curves

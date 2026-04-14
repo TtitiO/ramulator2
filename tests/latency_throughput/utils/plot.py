@@ -178,3 +178,47 @@ def plot_lat_tp(
     plt.savefig(png_path, dpi=300, bbox_inches="tight")
     plt.close(fig)
     return png_path
+
+
+def plot_pim_lat_tp(
+    curves,
+    std_name,
+    output_dir="tests/latency_throughput/plots/fast",
+):
+    os.makedirs(output_dir, exist_ok=True)
+
+    read_ratios = sorted(curves.keys())
+    cmap = LinearSegmentedColormap.from_list(
+        "custom_blue_red", [(0.0, "#0000AA"), (1.0, "#AA0000")]
+    )
+    norm = mcolors.Normalize(vmin=50, vmax=100)
+
+    fig, ax = plt.subplots(figsize=(10, 6))
+    fig.patch.set_facecolor("white")
+    ax.set_facecolor("white")
+
+    for rr in read_ratios:
+        c = curves[rr]
+        color = cmap(norm(rr))
+        ax.plot(c["pim_throughput"], c["pim_lat"], "o-", color=color, linewidth=2, markersize=5, zorder=3)
+
+    ax.set_xlim(left=0)
+    ax.set_ylim(bottom=0)
+    ax.set_title(std_name.upper(), fontsize=20, fontweight="bold", pad=16)
+    ax.set_xlabel("PIMCompute Throughput (requests/ns)", fontsize=16, labelpad=8)
+    ax.set_ylabel("PIMCompute Latency (ns)", fontsize=16, labelpad=8)
+    ax.grid(True, linestyle="--", linewidth=0.8, alpha=0.4)
+    ax.tick_params(axis="both", which="major", direction="in", length=5, width=1.2, labelsize=13)
+    for spine in ax.spines.values():
+        spine.set_linewidth(1.5)
+
+    sm = plt.cm.ScalarMappable(cmap=cmap, norm=norm)
+    sm.set_array([])
+    cbar = fig.colorbar(sm, ax=ax, pad=0.02)
+    cbar.set_label("% Reads", fontsize=14)
+    cbar.ax.tick_params(labelsize=12)
+
+    png_path = os.path.join(output_dir, f"{std_name}_pim_lat_tp.png")
+    plt.savefig(png_path, dpi=300, bbox_inches="tight")
+    plt.close(fig)
+    return png_path

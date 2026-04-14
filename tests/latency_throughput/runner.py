@@ -47,14 +47,25 @@ def run_single(
         clock_ratio = cfg["frontend_clock_ratio"]
     if stream_cols is None:
         stream_cols = cfg["stream_cols"]
+    pim_mode = cfg.get("pim_mode", False)
+    num_pim_requests = cfg.get("num_pim_requests", 0)
+    pim_same_bank = cfg.get("pim_same_bank", True)
 
     dram = create_dram(cfg)
     layout = extract_dram_layout(dram)
+
+    pim_request_type_id = -1
+    if pim_mode:
+        pim_request_type_id = list(type(dram).supported_requests.keys()).index("PIMCompute")
 
     frontend = ramulator.frontend.LatencyThroughputTrace(
         clock_ratio=clock_ratio,
         nop_counter=nop_counter,
         num_probe_requests=num_probes,
+        pim_mode=pim_mode,
+        num_pim_requests=num_pim_requests,
+        pim_same_bank=pim_same_bank,
+        pim_request_type_id=pim_request_type_id,
         warmup_cycles=warmup,
         seed=12345,
         read_ratio=read_ratio,
@@ -88,9 +99,16 @@ def run_streaming_only(std_name, num_requests=50000, full=False):
     cfg = STANDARDS[std_name]
     clock_ratio = cfg["frontend_clock_ratio"]
     stream_cols = cfg["stream_cols"]
+    pim_mode = cfg.get("pim_mode", False)
+    num_pim_requests = cfg.get("num_pim_requests", 0)
+    pim_same_bank = cfg.get("pim_same_bank", True)
 
     dram = create_dram(cfg)
     layout = extract_dram_layout(dram)
+
+    pim_request_type_id = -1
+    if pim_mode:
+        pim_request_type_id = list(type(dram).supported_requests.keys()).index("PIMCompute")
 
     frontend = ramulator.frontend.LatencyThroughputTrace(
         clock_ratio=clock_ratio,
@@ -98,6 +116,10 @@ def run_streaming_only(std_name, num_requests=50000, full=False):
         num_probe_requests=0,
         streaming_only=True,
         num_streaming_requests=num_requests,
+        pim_mode=pim_mode,
+        num_pim_requests=num_pim_requests,
+        pim_same_bank=pim_same_bank,
+        pim_request_type_id=pim_request_type_id,
         read_ratio=100,
         stream_cols=stream_cols,
         **layout,

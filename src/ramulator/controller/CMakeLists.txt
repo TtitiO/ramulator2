@@ -34,6 +34,7 @@ target_sources(
 
   impl/generic_ddr_controller.cpp
   impl/lpddr5_controller.cpp
+  impl/lpddr5_pim_controller.cpp
   impl/hbm_controller.cpp
 )
 

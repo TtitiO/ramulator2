@@ -5,8 +5,9 @@
 # Regenerate:   python -m ramulator codegen
 ###############################################################################
 from .ch_ra_ba_ro_co import ChRaBaRoCo
+from .direct_mapper import DirectMapper
 from .mop4_clxor import MOP4CLXOR
 from .pass_through_addr_mapper import PassThroughAddrMapper
 from .ro_ba_ra_co_ch import RoBaRaCoCh
 
-__all__ = ['ChRaBaRoCo', 'MOP4CLXOR', 'PassThroughAddrMapper', 'RoBaRaCoCh']
+__all__ = ['ChRaBaRoCo', 'DirectMapper', 'MOP4CLXOR', 'PassThroughAddrMapper', 'RoBaRaCoCh']

@@ -9,7 +9,7 @@ target_sources(
 
   commands/ACT.h  commands/ACT1.h  commands/ACT2.h
   commands/PREpb.h  commands/PREab.h
-  commands/RD.h   commands/WR.h
+  commands/RD.h   commands/WR.h  commands/PIM_MAC.h
   commands/RDA.h  commands/WRA.h
   commands/REFab.h  commands/REFpb.h
   commands/RFMab.h  commands/RFMpb.h
@@ -23,6 +23,7 @@ target_sources(
   impl/HBM2.cpp
   impl/HBM3.cpp
   impl/LPDDR5.cpp
+  impl/LPDDR5PIM.cpp
 )
 
 target_link_libraries(
