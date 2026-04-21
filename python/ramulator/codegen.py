@@ -135,6 +135,169 @@ def generate_header(cls):
             bus_lines.append(f"      command_meta[Command::{c}].is_column_command = true;")
     bus_flags = "\n".join(bus_lines) + "\n" if bus_lines else ""
 
+    has_power = bool(getattr(cls, "power_commands_counted", []))
+    power_include = '#include "ramulator/dram/lambdas.h"\n#include <fmt/format.h>' if has_power else ""
+    power_call = "    set_powers();\n" if has_power else ""
+    power_cmd_enum = ""
+    incremental_cmd_enum = ""
+    power_methods = ""
+    if has_power:
+        counted_names = list(cls.power_commands_counted)
+        parameter_fields = list(getattr(cls, "power_parameter_fields", []))
+        background_terms = dict(getattr(cls, "power_background_energy_terms", {}))
+        command_energy_terms = dict(getattr(cls, "power_command_energy_terms", {}))
+        incremental_counted_names = list(getattr(cls, "power_incremental_commands_counted", []))
+        incremental_hooks = list(getattr(cls, "power_incremental_command_hooks", []))
+        incremental_timing_map = dict(getattr(cls, "power_incremental_command_energy_timings", {}))
+        incremental_energy_terms = dict(getattr(cls, "power_incremental_command_energy_terms", {}))
+
+        def _sum_term_expr(terms, subtract_baseline=False):
+            parts = []
+            for item in terms:
+                voltage_key = item[0]
+                current_key = item[1]
+                baseline_key = item[2] if len(item) > 2 else None
+                base = f'power_params.at("{current_key}")'
+                if subtract_baseline and baseline_key is not None:
+                    base = f'({base} - power_params.at("{baseline_key}"))'
+                parts.append(f'(power_params.at("{voltage_key}") * {base})')
+            return " + ".join(parts) if parts else "0.0"
+
+        power_cmd_enum = (
+            "  struct PowerCommand {\n"
+            f"    enum : int {{ {', '.join(counted_names)}, COUNT }};\n"
+            "  };\n\n"
+        )
+        incremental_cmd_enum = ""
+        hook_lines = []
+        for level_name, command_name, lambda_name in cls.power_command_hooks:
+            hook_lines.append(
+                f"    powers[Level::{level_name}][Command::{command_name}] = Lambdas::Power::{level_name}::{lambda_name}<{name}>;"
+            )
+        hook_body = "\n".join(hook_lines)
+        incremental_hook_lines = []
+        for level_name, command_name, lambda_name in incremental_hooks:
+            incremental_hook_lines.append(
+                f"    powers_incremental[Level::{level_name}][Command::{command_name}] = Lambdas::Power::{level_name}::{lambda_name}<{name}>;"
+            )
+        incremental_hook_body = "\n".join(incremental_hook_lines)
+        timing_map = cls.power_command_energy_timings
+        cmd_formulas = []
+        for counted_name in counted_names:
+            timing_name = timing_map[counted_name]
+            current_expr = _sum_term_expr(command_energy_terms[counted_name], subtract_baseline=True)
+            cmd_formulas.append(
+                f"    double {counted_name.lower()}_cmd_energy = ({current_expr}) * rank_stats.command_counters[PowerCommand::{counted_name}] * timing_vals[Timing::{timing_name}] * tCK_ns / 1E3;"
+            )
+        cmd_formula_body = "\n".join(cmd_formulas)
+        cmd_sum = " +\n        ".join(f"{counted_name.lower()}_cmd_energy" for counted_name in counted_names)
+        incremental_formulas = []
+        incremental_sum = "0.0"
+        if incremental_counted_names:
+            for counted_name in incremental_counted_names:
+                timing_name = incremental_timing_map[counted_name]
+                current_expr = _sum_term_expr(
+                    incremental_energy_terms[counted_name], subtract_baseline=True
+                )
+                incremental_formulas.append(
+                    f"    double {counted_name.lower()}_incremental_cmd_energy = ({current_expr}) * rank_stats.incremental_command_counters[Command::{counted_name}] * timing_vals[Timing::{timing_name}] * tCK_ns / 1E3;"
+                )
+            incremental_sum = " +\n        ".join(
+                f"{counted_name.lower()}_incremental_cmd_energy"
+                for counted_name in incremental_counted_names
+            )
+        incremental_formula_body = "\n".join(incremental_formulas)
+        incremental_stats_decl = ""
+        incremental_stats_add = ""
+        incremental_stats_rank_add = ""
+        incremental_finalize_reset = ""
+        incremental_process_rank = ""
+        incremental_counter_init = ""
+        if incremental_counted_names:
+            incremental_stats_decl = "\n  double total_incremental_cmd_energy_pJ = 0.0;\n"
+            incremental_stats_add = '    stats.add("total_incremental_cmd_energy", total_incremental_cmd_energy_pJ);\n'
+            incremental_stats_rank_add = (
+                '      stats.add(fmt::format("total_incremental_cmd_energy_rank_{}", power_stat.rank_id),\n'
+                '                power_stat.incremental_command_energy_pJ);\n'
+            )
+            incremental_finalize_reset = "\n    total_incremental_cmd_energy_pJ = 0.0;"
+            incremental_counter_init = (
+                "\n      power_stats[rank_id].incremental_command_counters.resize(command_count, 0);"
+            )
+            incremental_process_rank = f"\n{incremental_formula_body}\n    rank_stats.incremental_command_energy_pJ = {incremental_sum};\n    total_incremental_cmd_energy_pJ += rank_stats.incremental_command_energy_pJ;"
+        active_expr = _sum_term_expr(background_terms.get("active", []))
+        idle_expr = _sum_term_expr(background_terms.get("idle", []))
+        required_fields_cpp = "\n".join(
+            f'    if (!power_params.count("{field_name}")) throw std::runtime_error("{name}: missing required power field {field_name}");'
+            for field_name in parameter_fields
+        )
+        power_methods = f"""
+  void set_powers() {{
+    if (!drampower_enable) return;
+
+{required_fields_cpp}
+
+    int num_ranks = organization.level_sizes[Level::Rank];
+    power_stats.resize(num_ranks);
+    for (int rank_id = 0; rank_id < num_ranks; rank_id++) {{
+      power_stats[rank_id].rank_id = rank_id;
+      power_stats[rank_id].command_counters.resize(PowerCommand::COUNT, 0);
+{incremental_counter_init}
+      power_stats[rank_id].last_update_clk = 0;
+    }}
+
+    powers.resize(level_count, std::vector<PowerFunc_t>(command_count, nullptr));
+{hook_body}
+    powers_incremental.resize(level_count, std::vector<PowerFunc_t>(command_count, nullptr));
+{incremental_hook_body}
+  }}
+
+  void register_power_stats(Stats& stats) override {{
+    if (!drampower_enable) return;
+    stats.add("total_background_energy", total_background_energy_pJ);
+    stats.add("total_cmd_energy", total_cmd_energy_pJ);
+    stats.add("total_energy", total_energy_pJ);
+{incremental_stats_add}    
+    for (auto& power_stat : power_stats) {{
+      stats.add(fmt::format("total_background_energy_rank_{{}}", power_stat.rank_id), power_stat.background_active_energy_pJ + power_stat.background_idle_energy_pJ);
+      stats.add(fmt::format("total_cmd_energy_rank_{{}}", power_stat.rank_id), power_stat.command_energy_pJ);
+      stats.add(fmt::format("total_energy_rank_{{}}", power_stat.rank_id), power_stat.total_energy_pJ);
+{incremental_stats_rank_add}      
+      stats.add(fmt::format("background_active_energy_rank_{{}}", power_stat.rank_id), power_stat.background_active_energy_pJ);
+      stats.add(fmt::format("background_idle_energy_rank_{{}}", power_stat.rank_id), power_stat.background_idle_energy_pJ);
+      stats.add(fmt::format("active_cycles_rank_{{}}", power_stat.rank_id), power_stat.active_cycles);
+      stats.add(fmt::format("idle_cycles_rank_{{}}", power_stat.rank_id), power_stat.idle_cycles);
+    }}
+  }}
+
+  void finalize_power(Clk_t clk, DRAMNode* root) override {{
+    if (!drampower_enable || root == nullptr) return;
+    total_background_energy_pJ = 0.0;
+    total_cmd_energy_pJ = 0.0;
+    total_energy_pJ = 0.0;
+{incremental_finalize_reset}
+    for (auto& rank_node : root->m_child_nodes) {{
+      process_rank_energy(power_stats[rank_node->m_node_id], rank_node.get(), clk);
+    }}
+  }}
+
+  void process_rank_energy(DRAMPowerStats& rank_stats, DRAMNode* rank_node, Clk_t clk) {{
+    Lambdas::Power::Rank::finalize_rank<{name}>(rank_node, clk);
+    double tCK_ns = static_cast<double>(timing_vals[Timing::tCK_ps]) / 1000.0;
+    rank_stats.background_active_energy_pJ = ({active_expr}) * rank_stats.active_cycles * tCK_ns / 1E3;
+    rank_stats.background_idle_energy_pJ = ({idle_expr}) * rank_stats.idle_cycles * tCK_ns / 1E3;
+{cmd_formula_body}
+    rank_stats.command_energy_pJ = {cmd_sum};
+    rank_stats.total_energy_pJ = rank_stats.background_active_energy_pJ + rank_stats.background_idle_energy_pJ + rank_stats.command_energy_pJ;
+    total_background_energy_pJ += rank_stats.background_active_energy_pJ + rank_stats.background_idle_energy_pJ;
+    total_cmd_energy_pJ += rank_stats.command_energy_pJ;
+    total_energy_pJ += rank_stats.total_energy_pJ;
+{incremental_process_rank}
+  }}
+
+{incremental_stats_decl}
+"""
+
     return f"""\
 /******************************************************************************
  * AUTO-GENERATED FILE — DO NOT EDIT
@@ -148,6 +311,7 @@ def generate_header(cls):
 
 #include "ramulator/dram/commands/populate.h"
 {cmd_includes}
+{power_include}
 
 namespace Ramulator {{
 
@@ -167,6 +331,8 @@ class {name} : public DRAMSpec {{
 {timing_enum}
     }};
   }};
+
+{power_cmd_enum}{incremental_cmd_enum}
 
   using CommandImpls = std::tuple<
 {cmd_impls}
@@ -201,7 +367,10 @@ class {name} : public DRAMSpec {{
 
     // Command handlers (function pointers, metadata, bank targets)
     populate_commands(CommandImpls{{}}, *this);
-{bus_flags}  }}
+{bus_flags}{power_call}
+  }}
+
+{power_methods}
 }};
 
 // Self-registration
@@ -520,6 +689,10 @@ def codegen_main(args):
             sys.exit(1)
     else:
         repo_root = os.path.dirname(os.path.dirname(src_dir))
+
+    if repo_root is None:
+        print("Error: cannot resolve repo root", file=sys.stderr)
+        sys.exit(1)
 
     python_dir = os.path.join(repo_root, "python", "ramulator")
 

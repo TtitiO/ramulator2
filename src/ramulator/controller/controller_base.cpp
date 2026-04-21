@@ -116,6 +116,8 @@ void ControllerBase::setup_base(IFrontEnd* frontend, IMemorySystem* memory_syste
 
   m_stats.add("read_latency", s_read_latency);
   m_stats.add("avg_read_latency", s_avg_read_latency);
+
+  m_device.m_spec->register_power_stats(m_stats);
 }
 
 // ── IController overrides ───────────────────────────────────────────────
@@ -227,6 +229,8 @@ void ControllerBase::retire_request(ReqBuffer::iterator& req_it, ReqBuffer& buff
       req_it->callback(*req_it);
     }
     s_num_write_reqs_served++;
+  } else if (req_it->callback) {
+    req_it->callback(*req_it);
   } else if (req_it->type_id == -1) {
     s_num_maintenance_reqs_served++;
   }
@@ -400,6 +404,8 @@ void ControllerBase::set_write_mode() {
 }
 
 void ControllerBase::finalize() {
+  m_device.finalize_power(m_clk);
+
   s_avg_read_latency = (s_num_read_reqs_served > 0) ? (float)s_read_latency / (float)s_num_read_reqs_served : 0;
 
   s_queue_len_avg = (m_clk > 0) ? (float)s_queue_len / (float)m_clk : 0;

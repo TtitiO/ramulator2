@@ -1,6 +1,8 @@
 #include <fmt/format.h>
 #include <optional>
 #include <random>
+#include <sstream>
+#include <string>
 
 #include "ramulator/base/param.h"
 #include "ramulator/frontend/i_frontend.h"
@@ -37,11 +39,21 @@ class LatencyThroughputTrace : public IFrontEnd, public Implementation {
 
   bool m_pim_mode = false;
   int m_num_pim_requests = 0;
+  std::string m_pim_distribution_mode = "same_bank";
   bool m_pim_same_bank = true;
   int m_pim_bank_group_size = 0;
+  std::string m_pim_bank_sequence = "";
+  std::vector<int> m_pim_bank_sequence_values;
   int m_pim_burst_length = 1;
   int m_pim_dependency_count = 1;
+  int m_pim_row_start = 0;
+  int m_pim_row_count = 1;
   int m_pim_request_type_id = -1;
+  int m_pim_load_request_type_id = -1;
+  int m_pim_compute_all_request_type_id = -1;
+  bool m_pim_split_all_bank = false;
+  int m_pim_split_phase = 0;
+  bool m_pim_split_waiting_completion = false;
 
   // Pointer-chasing state
   int m_num_probe_requests;
@@ -77,11 +89,18 @@ class LatencyThroughputTrace : public IFrontEnd, public Implementation {
     RAMULATOR_PARSE_PARAM(m_num_streaming_requests, int, "num_streaming_requests").default_val(0);
     RAMULATOR_PARSE_PARAM(m_pim_mode, bool, "pim_mode").default_val(false);
     RAMULATOR_PARSE_PARAM(m_num_pim_requests, int, "num_pim_requests").default_val(0);
+    RAMULATOR_PARSE_PARAM(m_pim_distribution_mode, std::string, "pim_distribution_mode").default_val("same_bank");
     RAMULATOR_PARSE_PARAM(m_pim_same_bank, bool, "pim_same_bank").default_val(true);
     RAMULATOR_PARSE_PARAM(m_pim_bank_group_size, int, "pim_bank_group_size").default_val(0);
+    RAMULATOR_PARSE_PARAM(m_pim_bank_sequence, std::string, "pim_bank_sequence").default_val("");
     RAMULATOR_PARSE_PARAM(m_pim_burst_length, int, "pim_burst_length").default_val(1);
     RAMULATOR_PARSE_PARAM(m_pim_dependency_count, int, "pim_dependency_count").default_val(1);
+    RAMULATOR_PARSE_PARAM(m_pim_row_start, int, "pim_row_start").default_val(0);
+    RAMULATOR_PARSE_PARAM(m_pim_row_count, int, "pim_row_count").default_val(1);
     RAMULATOR_PARSE_PARAM(m_pim_request_type_id, int, "pim_request_type_id").default_val(-1);
+    RAMULATOR_PARSE_PARAM(m_pim_load_request_type_id, int, "pim_load_request_type_id").default_val(-1);
+    RAMULATOR_PARSE_PARAM(m_pim_compute_all_request_type_id, int, "pim_compute_all_request_type_id").default_val(-1);
+    RAMULATOR_PARSE_PARAM(m_pim_split_all_bank, bool, "pim_split_all_bank").default_val(false);
     RAMULATOR_PARSE_PARAM(m_stream_cols, int, "stream_cols").default_val(8);
     RAMULATOR_PARSE_PARAM(m_warmup_cycles, int, "warmup_cycles").default_val(10000);
     RAMULATOR_PARSE_PARAM(m_read_ratio, int, "read_ratio").default_val(100);
@@ -113,6 +132,10 @@ class LatencyThroughputTrace : public IFrontEnd, public Implementation {
       throw std::runtime_error(
           "LatencyThroughputTrace: pim_request_type_id must be set when pim_mode=true");
     }
+    if (m_pim_split_all_bank && (m_pim_load_request_type_id < 0 || m_pim_compute_all_request_type_id < 0)) {
+      throw std::runtime_error(
+          "LatencyThroughputTrace: all-bank split mode requires load and compute-all request type ids");
+    }
     if (m_pim_burst_length <= 0) {
       throw std::runtime_error(
           "LatencyThroughputTrace: pim_burst_length must be positive");
@@ -124,6 +147,49 @@ class LatencyThroughputTrace : public IFrontEnd, public Implementation {
     if (m_pim_dependency_count > m_num_cols) {
       throw std::runtime_error(
           "LatencyThroughputTrace: pim_dependency_count cannot exceed num_cols");
+    }
+    if (m_pim_row_count <= 0) {
+      throw std::runtime_error(
+          "LatencyThroughputTrace: pim_row_count must be positive");
+    }
+    if (m_pim_row_start < 0 || m_pim_row_start >= m_num_rows) {
+      throw std::runtime_error(
+          "LatencyThroughputTrace: pim_row_start must be within [0, num_rows)");
+    }
+    if (m_pim_row_start + m_pim_row_count > m_num_rows) {
+      throw std::runtime_error(
+          "LatencyThroughputTrace: pim_row window must fit within num_rows");
+    }
+
+    if (m_pim_distribution_mode != "same_bank" && m_pim_distribution_mode != "bank_sequence") {
+      throw std::runtime_error(
+          "LatencyThroughputTrace: pim_distribution_mode must be 'same_bank' or 'bank_sequence'");
+    }
+    if (m_pim_distribution_mode == "same_bank") {
+      if (!m_pim_bank_sequence.empty()) {
+        throw std::runtime_error(
+            "LatencyThroughputTrace: pim_bank_sequence must be empty in same_bank mode");
+      }
+    } else {
+      if (m_pim_bank_sequence.empty()) {
+        throw std::runtime_error(
+            "LatencyThroughputTrace: pim_bank_sequence must be set in bank_sequence mode");
+      }
+      m_pim_bank_sequence_values = parse_bank_sequence(m_pim_bank_sequence);
+      if (m_pim_bank_group_size < 0 || m_pim_bank_group_size > m_total_bank_units) {
+        throw std::runtime_error(
+            "LatencyThroughputTrace: pim_bank_group_size must be within [0, total_bank_units]");
+      }
+      int bounded_bank_units = m_total_bank_units;
+      if (m_pim_bank_group_size > 0) {
+        bounded_bank_units = m_pim_bank_group_size;
+      }
+      for (int bank : m_pim_bank_sequence_values) {
+        if (bank < 0 || bank >= bounded_bank_units) {
+          throw std::runtime_error(
+              "LatencyThroughputTrace: pim_bank_sequence entries must be within the bounded bank group");
+        }
+      }
     }
 
     m_stats.add("streaming_requests_sent", s_streaming_sent);
@@ -175,6 +241,9 @@ class LatencyThroughputTrace : public IFrontEnd, public Implementation {
 
   bool is_finished() override {
     if (m_pim_mode) {
+      if (m_pim_split_all_bank) {
+        return s_pim_completed >= m_num_pim_requests && !m_pim_split_waiting_completion && !m_retry_pim_req;
+      }
       return s_pim_completed >= m_num_pim_requests;
     }
     if (m_streaming_only) {
@@ -254,21 +323,36 @@ class LatencyThroughputTrace : public IFrontEnd, public Implementation {
       return;
     }
 
+    if (m_pim_split_all_bank && m_pim_split_waiting_completion) {
+      return;
+    }
+
     if (static_cast<int>(s_pim_sent) >= m_num_pim_requests) {
       return;
     }
 
     if (!m_retry_pim_req) {
-      Request req = make_request(pim_addr_vec(s_pim_sent), m_pim_request_type_id, 0);
+      int type = m_pim_request_type_id;
+      if (m_pim_split_all_bank) {
+        type = (m_pim_split_phase == 0) ? m_pim_load_request_type_id : m_pim_compute_all_request_type_id;
+      }
+      Request req = make_request(pim_addr_vec(s_pim_sent), type, 0);
       req.callback = [this](Request& completed) {
         s_total_pim_latency += (completed.depart - completed.arrive);
         s_pim_completed++;
+        if (m_pim_split_all_bank) {
+          m_pim_split_phase = 1 - m_pim_split_phase;
+          m_pim_split_waiting_completion = false;
+        }
       };
       m_retry_pim_req = req;
     }
 
     if (m_memory_system->send(*m_retry_pim_req)) {
       s_pim_sent++;
+      if (m_pim_split_all_bank) {
+        m_pim_split_waiting_completion = true;
+      }
       m_retry_pim_req.reset();
     }
   }
@@ -344,19 +428,27 @@ class LatencyThroughputTrace : public IFrontEnd, public Implementation {
   AddrVec_t pim_addr_vec(size_t idx) {
     AddrVec_t av(m_addr_vec_size, 0);
     int flat_bank = 0;
-    int dep_ctx = 0;
-    if (!m_pim_same_bank && m_total_bank_units > 0) {
+    size_t distribution_span = 1;
+    if (m_pim_distribution_mode == "bank_sequence") {
+      distribution_span = m_pim_bank_sequence_values.size();
+      flat_bank = m_pim_bank_sequence_values[(idx / m_pim_burst_length) % distribution_span];
+    } else if (!m_pim_same_bank && m_total_bank_units > 0) {
       int group_size = m_total_bank_units;
       if (m_pim_bank_group_size > 0 && m_pim_bank_group_size < m_total_bank_units) {
         group_size = m_pim_bank_group_size;
       }
-      flat_bank = static_cast<int>((idx / m_pim_burst_length) % group_size);
+      distribution_span = static_cast<size_t>(group_size);
+      flat_bank = static_cast<int>((idx / m_pim_burst_length) % distribution_span);
     }
-    if (m_pim_same_bank && m_pim_dependency_count > 1) {
-      dep_ctx = static_cast<int>((idx / m_pim_burst_length) % m_pim_dependency_count);
+
+    int dep_ctx = 0;
+    if (m_pim_dependency_count > 1) {
+      dep_ctx = static_cast<int>(((idx / m_pim_burst_length) / distribution_span) % m_pim_dependency_count);
     }
+
+    int row_offset = static_cast<int>(((idx / m_pim_burst_length) / distribution_span / m_pim_dependency_count) % m_pim_row_count);
     decompose_bank(flat_bank, av);
-    av[m_row_pos] = 0;
+    av[m_row_pos] = m_pim_row_start + row_offset;
     av[m_col_pos] = dep_ctx;
     return av;
   }
@@ -368,6 +460,24 @@ class LatencyThroughputTrace : public IFrontEnd, public Implementation {
       av[m_bank_positions[i]] = flat % m_bank_counts[i];
       flat /= m_bank_counts[i];
     }
+  }
+
+  std::vector<int> parse_bank_sequence(const std::string& spec) {
+    std::vector<int> values;
+    std::stringstream ss(spec);
+    std::string token;
+    while (std::getline(ss, token, ',')) {
+      if (token.empty()) {
+        throw std::runtime_error(
+            "LatencyThroughputTrace: pim_bank_sequence contains an empty entry");
+      }
+      values.push_back(std::stoi(token));
+    }
+    if (values.empty()) {
+      throw std::runtime_error(
+          "LatencyThroughputTrace: pim_bank_sequence must contain at least one bank id");
+    }
+    return values;
   }
 };
 

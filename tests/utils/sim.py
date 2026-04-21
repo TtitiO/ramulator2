@@ -99,7 +99,7 @@ def run_single(
     """
     import ramulator
 
-    from tests.latency_throughput.testcases import STANDARDS
+    from tests.analysis.testcases import STANDARDS
 
     cfg = STANDARDS[std_name]
     if clock_ratio is None:
@@ -148,7 +148,7 @@ def run_streaming_only(std_name, num_requests=50000, full=False):
     """
     import ramulator
 
-    from tests.latency_throughput.testcases import STANDARDS
+    from tests.analysis.testcases import STANDARDS
 
     cfg = STANDARDS[std_name]
     clock_ratio = cfg["frontend_clock_ratio"]

@@ -80,6 +80,16 @@ class DRAMStandard(Component):
     read_latency = "nCL + nBL"
     row_commands = []  # type: list[str]  — commands on the row bus (dual-bus standards)
     column_commands = []  # type: list[str]  — commands on the column bus (dual-bus standards)
+    power_commands_counted = []  # type: list[str]
+    power_command_hooks = []  # type: list[tuple[str, str, str]]  — (level, command, lambda name)
+    power_command_energy_timings = {}  # type: dict[str, str]
+    power_parameter_fields = []  # type: list[str]
+    power_background_energy_terms = {}  # type: dict[str, list[tuple[str, str]]]
+    power_command_energy_terms = {}  # type: dict[str, list[tuple[str, str, str | None]]]
+    power_incremental_commands_counted = []  # type: list[str]
+    power_incremental_command_hooks = []  # type: list[tuple[str, str, str]]  — (level, command, lambda name)
+    power_incremental_command_energy_timings = {}  # type: dict[str, str]
+    power_incremental_command_energy_terms = {}  # type: dict[str, list[tuple[str, str, str | None]]]
 
     # ---- Class-level: presets ----
     org_presets = {}  # type: dict[str, dict]
@@ -97,9 +107,10 @@ class DRAMStandard(Component):
         if isinstance(getattr(cls, "name", None), str):
             DRAMStandard._registry[cls.name] = cls
 
-    def __init__(self, *, org_preset, timing_preset, **overrides):
+    def __init__(self, *, org_preset, timing_preset, power=None, **overrides):
         super().__init__(org_preset=org_preset, timing_preset=timing_preset)
         self._overrides = overrides
+        self._power = power
 
     @classmethod
     def resolve_secondary_timings(cls, timing_dict, org_dict):
@@ -236,7 +247,7 @@ class DRAMStandard(Component):
                 )
             org_counts.append(org_dict[key])
 
-        return {
+        config = {
             "impl": cls.name,
             "org": {
                 "dq": org_dict["dq"],
@@ -248,6 +259,9 @@ class DRAMStandard(Component):
             "read_latency": cls._eval_expr(cls.read_latency, timing_dict),
             "timing_constraints": constraints,
         }
+        if self._power is not None:
+            config["power"] = self._power
+        return config
 
     @classmethod
     def _generate_bus_constraints(cls, cmd_idx, cmd_cycles, tick_mult):

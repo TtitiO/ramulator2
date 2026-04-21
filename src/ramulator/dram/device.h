@@ -49,6 +49,8 @@ class DRAMDevice {
   // Compute flat bank index from addr_vec
   int get_flat_bank_id(const AddrVec_t& addr_vec) const;
 
+  void finalize_power(Clk_t clk);
+
   // Check if a bank node matches an addr_vec pattern (wildcards are -1)
   static bool bank_matches(DRAMNode* bank, const AddrVec_t& addr_vec);
 

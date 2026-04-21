@@ -11,10 +11,13 @@
 #include <vector>
 
 #include "ramulator/base/config_node.h"
+#include "ramulator/base/stats.h"
 #include "ramulator/base/type.h"
 #include "ramulator/dram/func_types.h"
 
 namespace Ramulator {
+
+struct DRAMNode;
 
 // Bank-targeting pattern for command state dispatch
 enum class BankTarget {
@@ -39,6 +42,26 @@ struct DRAMCommandMeta {
   bool is_refreshing = false;
   bool is_row_command = false;     // Row bus (HBM/HBM2: ACT, PREpb, PREab, REFab, REFpb)
   bool is_column_command = false;  // Column bus (HBM/HBM2: RD, WR, RDA, WRA)
+};
+
+struct DRAMPowerStats {
+  enum class PowerState {
+    Idle = 0,
+    Active = 1,
+  };
+
+  int rank_id = -1;
+  PowerState current_state = PowerState::Idle;
+  Clk_t last_update_clk = 0;
+  Clk_t active_cycles = 0;
+  Clk_t idle_cycles = 0;
+  double background_active_energy_pJ = 0.0;
+  double background_idle_energy_pJ = 0.0;
+  double command_energy_pJ = 0.0;
+  double incremental_command_energy_pJ = 0.0;
+  double total_energy_pJ = 0.0;
+  std::vector<size_t> command_counters;
+  std::vector<size_t> incremental_command_counters;
 };
 
 // Timing Constraint
@@ -92,6 +115,16 @@ struct DRAMSpec {
   int channel_width = -1;
   Clk_t read_latency = -1;
   int pim_blocks_per_bank = 1;
+  bool drampower_enable = false;
+  bool power_debug = false;
+  std::unordered_map<std::string, double> power_params;
+  std::vector<DRAMPowerStats> power_stats;
+  std::vector<std::vector<PowerFunc_t>> powers;
+  std::vector<std::vector<PowerFunc_t>> powers_incremental;
+  double total_background_energy_pJ = 0.0;
+  double total_cmd_energy_pJ = 0.0;
+  double total_incremental_cmd_energy_pJ = 0.0;
+  double total_energy_pJ = 0.0;
 
   // Per-level/command arrays
   Organization organization;
@@ -161,6 +194,12 @@ struct DRAMSpec {
   // Load runtime config data (organization, timing, etc.).
   // Defined in dram_spec.cpp.
   void load_config(const ConfigNode& config);
+
+  virtual void register_power_stats(Stats& stats) {
+  }
+
+  virtual void finalize_power(Clk_t clk, DRAMNode* root) {
+  }
 
   // Factory registry — maps DRAM standard name (e.g., "DDR4") to creator.
   using Creator = std::function<std::unique_ptr<DRAMSpec>(const ConfigNode&)>;

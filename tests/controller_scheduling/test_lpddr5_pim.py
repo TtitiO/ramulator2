@@ -51,6 +51,21 @@ def run_until_pim_reqs_served(dut: cs.ControllerUnderTest, count: int, max_ticks
     raise AssertionError(f"num_pim_reqs_served did not reach {count} within {max_ticks} ticks")
 
 
+def level_value(dut: cs.ControllerUnderTest, addr_vec: list[int], level_name: str) -> int:
+    return addr_vec[dut.level_names.index(level_name)]
+
+
+def bank_coords(dut: cs.ControllerUnderTest, cmd) -> tuple[int, int]:
+    return (
+        level_value(dut, cmd.addr_vec, "BankGroup"),
+        level_value(dut, cmd.addr_vec, "Bank"),
+    )
+
+
+def per_bank_stats(stats: dict, prefix: str, bank_count: int = 4) -> list[int]:
+    return [stats[f"{prefix}{bank_id}"] for bank_id in range(bank_count)]
+
+
 def test_pimcompute_issues_act1_act2_pim_mac():
     dut = make_dut()
     a = dut.addr_vec(Rank=0, BankGroup=0, Bank=0, Row=9, Column=0)
@@ -226,3 +241,240 @@ def test_same_bank_independent_pim_launches_serialize_when_bank_has_one_slot():
     assert stats["pim_dependency_stalls"] == 0
     assert stats["pim_capacity_stalls"] > 0
     assert stats["pim_inflight_peak"] == 1
+
+
+def test_multi_bank_same_dependency_id_scales_without_cross_bank_dependency_stalls():
+    dut = make_dut(pim_blocks_per_bank=1)
+    bank0 = dut.addr_vec(Rank=0, BankGroup=0, Bank=0, Row=9, Column=0)
+    bank1 = dut.addr_vec(Rank=0, BankGroup=0, Bank=1, Row=9, Column=0)
+
+    dut.send_request("PIMCompute", bank0)
+    dut.send_request("PIMCompute", bank1)
+
+    history = run_until_pim_mac_count(dut, count=2)
+    run_until_pim_reqs_served(dut, count=2, max_ticks=dut.timings["nPIM_MAC_LAT"] + 8)
+
+    pim_cmds = [cmd for cmd in history if cmd.command == "PIM_MAC"]
+    stats = dut.stats()
+
+    assert len(pim_cmds) == 2
+    assert [bank_coords(dut, cmd) for cmd in pim_cmds] == [(0, 0), (0, 1)]
+    dut.assert_gap(0, 1, 4, history=pim_cmds)
+    assert stats["num_pim_reqs_served"] == 2
+    assert stats["pim_dependency_stalls"] == 0
+    assert stats["pim_capacity_stalls"] == 0
+    assert stats["pim_inflight_peak"] == 1
+
+
+def test_bounded_multi_bank_round_robin_keeps_one_inflight_slot_per_bank():
+    dut = make_dut(pim_blocks_per_bank=2)
+    addrs = [
+        dut.addr_vec(Rank=0, BankGroup=0, Bank=bank, Row=9, Column=0)
+        for bank in range(4)
+    ]
+
+    for addr in addrs:
+        dut.send_request("PIMCompute", addr)
+
+    history = run_until_pim_mac_count(dut, count=4)
+    run_until_pim_reqs_served(dut, count=4, max_ticks=dut.timings["nPIM_MAC_LAT"] + 12)
+
+    pim_cmds = [cmd for cmd in history if cmd.command == "PIM_MAC"]
+    stats = dut.stats()
+
+    assert len(pim_cmds) == 4
+    assert [bank_coords(dut, cmd) for cmd in pim_cmds] == [(0, 0), (0, 1), (0, 2), (0, 3)]
+    assert [cmd.clk for cmd in pim_cmds] == [16, 20, 24, 28]
+    assert stats["num_pim_reqs_served"] == 4
+    assert stats["pim_dependency_stalls"] == 0
+    assert stats["pim_capacity_stalls"] == 0
+    assert stats["pim_inflight_peak"] == 1
+    assert stats["pim_simultaneous_active_banks_peak"] == 3
+    assert per_bank_stats(stats, "pim_launches_bank_") == [1, 1, 1, 1]
+    assert per_bank_stats(stats, "pim_inflight_peak_bank_") == [1, 1, 1, 1]
+
+
+def test_cross_bank_refpb_waits_only_for_target_bank_while_other_bank_remains_inflight():
+    dut = make_dut(pim_blocks_per_bank=1)
+    bank0 = dut.addr_vec(Rank=0, BankGroup=0, Bank=0, Row=9, Column=0)
+    bank1 = dut.addr_vec(Rank=0, BankGroup=0, Bank=1, Row=9, Column=0)
+    refresh_bank0 = dut.addr_vec(Rank=0, BankGroup=0, Bank=0, Row=dut.ALL, Column=0)
+
+    dut.send_request("PIMCompute", bank0)
+    dut.send_request("PIMCompute", bank1)
+
+    history = run_until_pim_mac_count(dut, count=2)
+    pim_cmds = [cmd for cmd in history if cmd.command == "PIM_MAC"]
+    assert [bank_coords(dut, cmd) for cmd in pim_cmds] == [(0, 0), (0, 1)]
+
+    dut.priority_send("REFpb", refresh_bank0)
+
+    first_to_second_gap = pim_cmds[1].clk - pim_cmds[0].clk
+    blocked_cycles = dut.timings["nPIM_MAC_LAT"] - first_to_second_gap - 1
+    for _ in range(max(0, blocked_cycles)):
+        issued = dut.tick()
+        history.extend(issued)
+        assert issued == []
+
+    history.extend(dut.run_until_idle(max_ticks=512))
+    stats = dut.stats()
+
+    dut.assert_commands(["ACT1", "ACT2", "ACT1", "ACT2", "PIM_MAC", "PIM_MAC", "PREpb", "REFpb"], history=history)
+    assert history[6].clk > pim_cmds[1].clk
+    assert history[6].clk > pim_cmds[0].clk + dut.timings["nPIM_MAC_LAT"]
+    assert stats["num_pim_reqs_served"] == 2
+    assert stats["pim_simultaneous_active_banks_peak"] == 2
+    assert per_bank_stats(stats, "pim_launches_bank_") == [1, 1, 0, 0]
+    assert per_bank_stats(stats, "pim_inflight_peak_bank_") == [1, 1, 0, 0]
+
+
+def test_all_bank_load_then_execute_requires_mode_and_load_ordering():
+    dut = make_dut()
+    all_banks = dut.addr_vec(Rank=0, BankGroup=dut.ALL, Bank=dut.ALL, Row=0, Column=0)
+    concrete = dut.addr_vec(Rank=0, BankGroup=0, Bank=0, Row=0, Column=0)
+
+    dut.priority_send("HAB", all_banks)
+    history = []
+    history.extend(dut.tick())
+    dut.send_request("PIMLoadAll", concrete)
+    history.extend(dut.tick())
+    dut.priority_send("HAB_PIM", all_banks)
+    dut.send_request("PIMComputeAll", concrete)
+
+    for _ in range(64):
+        history.extend(dut.tick())
+        if [cmd.command for cmd in history] == ["HAB", "PIM_BCAST", "HAB_PIM", "PIM_MAC_AB"]:
+            break
+    dut.assert_commands(["HAB", "PIM_BCAST", "HAB_PIM", "PIM_MAC_AB"], history=history)
+
+    for _ in range(dut.timings["nPIM_MAC_LAT"] + 2):
+        dut.tick()
+
+    stats = dut.stats()
+    assert stats["num_pim_ab_reqs_served"] == 1
+    assert stats["pim_load_stalls"] == 0
+    assert stats["pim_mode_stalls"] == 0
+    assert stats["pim_ab_inflight_peak"] == 1
+    assert stats["pim_inflight_peak"] == 16
+    assert per_bank_stats(stats, "pim_launches_bank_") == [1, 1, 1, 1]
+    assert per_bank_stats(stats, "pim_inflight_peak_bank_") == [1, 1, 1, 1]
+
+
+def test_all_bank_execute_stalls_without_load():
+    dut = make_dut()
+    all_banks = dut.addr_vec(Rank=0, BankGroup=dut.ALL, Bank=dut.ALL, Row=0, Column=0)
+    concrete = dut.addr_vec(Rank=0, BankGroup=0, Bank=0, Row=0, Column=0)
+
+    dut.priority_send("HAB_PIM", all_banks)
+    dut.send_request("PIMComputeAll", concrete)
+
+    history = []
+    for _ in range(32):
+        history.extend(dut.tick())
+
+    assert [cmd.command for cmd in history] == ["HAB_PIM"]
+    stats = dut.stats()
+    assert stats["num_pim_ab_reqs_served"] == 0
+    assert stats["pim_load_stalls"] > 0
+
+
+def test_host_reads_do_not_issue_while_rank_is_in_hab_mode():
+    dut = make_dut()
+    all_banks = dut.addr_vec(Rank=0, BankGroup=dut.ALL, Bank=dut.ALL, Row=0, Column=0)
+    host = dut.addr_vec(Rank=0, BankGroup=0, Bank=0, Row=4, Column=0)
+
+    dut.priority_send("HAB", all_banks)
+    history = []
+    history.extend(dut.tick())
+    dut.send_request("Read", host)
+
+    for _ in range(16):
+        history.extend(dut.tick())
+
+    assert [cmd.command for cmd in history] == ["HAB"]
+
+
+def test_host_reads_do_not_issue_while_rank_is_in_hab_pim_mode():
+    dut = make_dut()
+    all_banks = dut.addr_vec(Rank=0, BankGroup=dut.ALL, Bank=dut.ALL, Row=0, Column=0)
+    host = dut.addr_vec(Rank=0, BankGroup=0, Bank=0, Row=4, Column=0)
+
+    dut.priority_send("HAB_PIM", all_banks)
+    history = []
+    history.extend(dut.tick())
+    dut.send_request("Read", host)
+
+    for _ in range(16):
+        history.extend(dut.tick())
+
+    assert [cmd.command for cmd in history] == ["HAB_PIM"]
+
+
+def test_all_bank_refresh_waits_for_pim_mac_ab_completion():
+    dut = make_dut()
+    all_banks = dut.addr_vec(Rank=0, BankGroup=dut.ALL, Bank=dut.ALL, Row=0, Column=0)
+    concrete = dut.addr_vec(Rank=0, BankGroup=0, Bank=0, Row=0, Column=0)
+
+    dut.priority_send("HAB", all_banks)
+    history = []
+    history.extend(dut.tick())
+    dut.send_request("PIMLoadAll", concrete)
+    history.extend(dut.tick())
+    dut.priority_send("HAB_PIM", all_banks)
+    dut.send_request("PIMComputeAll", concrete)
+
+    for _ in range(64):
+        issued = dut.tick()
+        history.extend(issued)
+        if [cmd.command for cmd in history] == ["HAB", "PIM_BCAST", "HAB_PIM", "PIM_MAC_AB"]:
+            break
+    else:
+        raise AssertionError("PIM_MAC_AB was not issued within 64 ticks")
+
+    dut.priority_send("REFab", all_banks)
+
+    for _ in range(max(0, dut.timings["nPIM_MAC_LAT"] - 1)):
+        issued = dut.tick()
+        history.extend(issued)
+        assert issued == []
+
+    history.extend(dut.run_until_idle(max_ticks=512))
+
+    commands = [cmd.command for cmd in history]
+    assert commands[:4] == ["HAB", "PIM_BCAST", "HAB_PIM", "PIM_MAC_AB"]
+    assert commands[-1] == "REFab"
+    assert commands.index("PIM_MAC_AB") < commands.index("REFab")
+
+
+def test_all_bank_completion_allows_sb_transition_and_host_read_progress():
+    dut = make_dut()
+    all_banks = dut.addr_vec(Rank=0, BankGroup=dut.ALL, Bank=dut.ALL, Row=0, Column=0)
+    concrete = dut.addr_vec(Rank=0, BankGroup=0, Bank=0, Row=0, Column=0)
+    host = dut.addr_vec(Rank=0, BankGroup=0, Bank=0, Row=4, Column=0)
+
+    dut.priority_send("HAB", all_banks)
+    history = []
+    history.extend(dut.tick())
+    dut.send_request("PIMLoadAll", concrete)
+    history.extend(dut.tick())
+    dut.priority_send("HAB_PIM", all_banks)
+    dut.send_request("PIMComputeAll", concrete)
+
+    for _ in range(64):
+        issued = dut.tick()
+        history.extend(issued)
+        if [cmd.command for cmd in history] == ["HAB", "PIM_BCAST", "HAB_PIM", "PIM_MAC_AB"]:
+            break
+    else:
+        raise AssertionError("PIM_MAC_AB was not issued within 64 ticks")
+
+    for _ in range(dut.timings["nPIM_MAC_LAT"] + 2):
+        history.extend(dut.tick())
+
+    dut.priority_send("SB", all_banks)
+    dut.send_request("Read", host)
+    history.extend(dut.run_until_idle(max_ticks=512))
+
+    dut.assert_commands(["HAB", "PIM_BCAST", "HAB_PIM", "PIM_MAC_AB", "SB", "ACT1", "ACT2", "CAS_RD", "RD"], history=history)
+    stats = dut.stats()
+    assert stats["num_pim_ab_reqs_served"] == 1

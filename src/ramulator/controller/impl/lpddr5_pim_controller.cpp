@@ -2,6 +2,7 @@
 
 #include <cassert>
 #include <cstdint>
+#include <string>
 #include <stdexcept>
 #include <vector>
 
@@ -28,6 +29,12 @@ class LPDDR5PIMController : public ControllerBase {
     Deferred,
   };
 
+  enum class PIMRankMode {
+    SingleBank,
+    HostAllBank,
+    PIMAllBank,
+  };
+
   ReqBuffer m_activating_buffer;
   int m_cmd_act1 = -1;
   int m_cmd_act2 = -1;
@@ -48,10 +55,20 @@ class LPDDR5PIMController : public ControllerBase {
   int m_nWCKPST = 0;
 
   int m_cmd_pim_mac = -1;
+  int m_cmd_sb = -1;
+  int m_cmd_hab = -1;
+  int m_cmd_hab_pim = -1;
+  int m_cmd_pim_bcast = -1;
+  int m_cmd_pim_mac_ab = -1;
   int m_pim_blocks_per_bank = 1;
   int m_row_level = -1;
   int m_column_level = -1;
   int m_nPIM_MAC_LAT = 0;
+  PIMRankMode m_pim_rank_mode = PIMRankMode::SingleBank;
+  bool m_pim_all_bank_load_ready = false;
+  bool m_pim_ab_inflight = false;
+  Clk_t m_pim_ab_done_clk = -1;
+  Request m_pim_ab_request;
   // dependency-aware MVP semantics:
   // - frontend-derived dependency identity comes from the frontend address pattern; do not add Request metadata.
   // - PIM_MAC issue is launch not completion.
@@ -78,8 +95,18 @@ class LPDDR5PIMController : public ControllerBase {
   size_t s_pim_dependency_stalls = 0;
   size_t s_num_pim_reqs_served = 0;
   size_t s_pim_inflight_peak = 0;
+  size_t s_pim_simultaneous_active_banks_peak = 0;
+  size_t s_pim_mode_stalls = 0;
+  size_t s_pim_load_stalls = 0;
+  size_t s_num_pim_ab_reqs_served = 0;
+  size_t s_pim_ab_inflight_peak = 0;
   int64_t s_pim_latency = 0;
   float s_avg_pim_latency = 0.0f;
+  static constexpr int kObservedPimBanks = 4;
+  std::vector<size_t> s_pim_launches_per_bank;
+  std::vector<size_t> s_pim_inflight_peak_per_bank;
+
+  void update_pim_observability();
 
   bool is_access_cmd(int cmd) const;
   bool is_read_cmd(int cmd) const;
@@ -88,10 +115,13 @@ class LPDDR5PIMController : public ControllerBase {
   bool cas_would_block_deadline() const;
   bool would_block_activating(int cmd, const AddrVec_t& addr_vec) const;
   bool would_block_pim_launch(const Request& req);
+  bool would_block_host_request(const Request& req) const;
   bool is_owned_act2_candidate(const Request& req) const;
   uint64_t get_pim_dependency_id(const Request& req) const;
   void complete_pim_if_ready();
   void launch_inflight_pim(Candidate cand, int flat_bank_id);
+  void handle_mode_or_bcast_completion(Request& req);
+  void launch_inflight_pim_ab(Candidate cand);
 
   Candidate select_normal_candidate();
   Candidate pick_urgent_act2();
@@ -116,6 +146,11 @@ void LPDDR5PIMController::init() {
   m_cmd_wr = spec.get_command_id("WR");
   m_cmd_rda = spec.get_command_id("RDA");
   m_cmd_wra = spec.get_command_id("WRA");
+  m_cmd_sb = spec.get_command_id("SB");
+  m_cmd_hab = spec.get_command_id("HAB");
+  m_cmd_hab_pim = spec.get_command_id("HAB_PIM");
+  m_cmd_pim_bcast = spec.get_command_id("PIM_BCAST");
+  m_cmd_pim_mac_ab = spec.get_command_id("PIM_MAC_AB");
 
   m_nAAD = spec.get_timing_value("nAAD");
   m_nCL = spec.get_timing_value("nCL");
@@ -129,6 +164,8 @@ void LPDDR5PIMController::init() {
   m_pim_blocks_per_bank = spec.pim_blocks_per_bank > 0 ? spec.pim_blocks_per_bank : 1;
   m_pim_slots_in_use.assign(m_device.m_bank_nodes.size(), 0);
   m_inflight_pim.assign(m_device.m_bank_nodes.size(), {});
+  s_pim_launches_per_bank.assign(kObservedPimBanks, 0);
+  s_pim_inflight_peak_per_bank.assign(kObservedPimBanks, 0);
 }
 
 void LPDDR5PIMController::setup(IFrontEnd* frontend, IMemorySystem* memory_system) {
@@ -145,10 +182,19 @@ void LPDDR5PIMController::setup(IFrontEnd* frontend, IMemorySystem* memory_syste
   m_stats.add("act2_deferred", s_act2_deferred);
   m_stats.add("pim_capacity_stalls", s_pim_capacity_stalls);
   m_stats.add("pim_dependency_stalls", s_pim_dependency_stalls);
+  m_stats.add("pim_mode_stalls", s_pim_mode_stalls);
+  m_stats.add("pim_load_stalls", s_pim_load_stalls);
   m_stats.add("pim_inflight_peak", s_pim_inflight_peak);
+  m_stats.add("pim_simultaneous_active_banks_peak", s_pim_simultaneous_active_banks_peak);
   m_stats.add("num_pim_reqs_served", s_num_pim_reqs_served);
+  m_stats.add("num_pim_ab_reqs_served", s_num_pim_ab_reqs_served);
+  m_stats.add("pim_ab_inflight_peak", s_pim_ab_inflight_peak);
   m_stats.add("pim_latency", s_pim_latency);
   m_stats.add("avg_pim_latency", s_avg_pim_latency);
+  for (int bank_id = 0; bank_id < kObservedPimBanks; bank_id++) {
+    m_stats.add(fmt::format("pim_launches_bank_{}", bank_id), s_pim_launches_per_bank[bank_id]);
+    m_stats.add(fmt::format("pim_inflight_peak_bank_{}", bank_id), s_pim_inflight_peak_per_bank[bank_id]);
+  }
 }
 
 bool LPDDR5PIMController::send(Request& req) {
@@ -175,7 +221,10 @@ bool LPDDR5PIMController::send(Request& req) {
 
   bool is_success = false;
   req.arrive = m_clk;
-  if (req.type_id == Request::Type::Read || req.final_command == m_cmd_pim_mac) {
+  if (req.type_id == Request::Type::Read || req.final_command == m_cmd_pim_mac ||
+      req.final_command == m_cmd_pim_bcast || req.final_command == m_cmd_pim_mac_ab ||
+      req.final_command == m_cmd_sb || req.final_command == m_cmd_hab ||
+      req.final_command == m_cmd_hab_pim) {
     is_success = m_read_buffer.enqueue(req);
   } else if (req.type_id == Request::Type::Write) {
     if (m_buffered_write_addrs.count(req.addr)) {
@@ -192,7 +241,7 @@ bool LPDDR5PIMController::send(Request& req) {
     }
   } else {
     throw std::runtime_error(fmt::format(
-        "LPDDR5PIM supports Read/Write and PIMCompute(type->PIM_MAC), got type_id {}",
+        "LPDDR5PIM supports Read/Write, PIMCompute, PIMLoadAll, and PIMComputeAll; got type_id {}",
         req.type_id));
   }
 
@@ -269,7 +318,9 @@ void LPDDR5PIMController::tick() {
 
   if (cand.buffer == &m_activating_buffer) {
     issue_owned_act2(cand, Act2IssueKind::Urgent);
-  } else if (cand.it->final_command == m_cmd_pim_mac) {
+  } else if (cand.it->final_command == m_cmd_pim_mac || cand.it->final_command == m_cmd_pim_bcast ||
+             cand.it->final_command == m_cmd_pim_mac_ab || cand.it->final_command == m_cmd_sb ||
+             cand.it->final_command == m_cmd_hab || cand.it->final_command == m_cmd_hab_pim) {
     issue_standard_candidate(cand);
   } else if (!try_issue_cas_sync(cand)) {
     issue_standard_candidate(cand);
@@ -291,6 +342,13 @@ bool LPDDR5PIMController::is_access_cmd(int cmd) const {
 
 bool LPDDR5PIMController::is_read_cmd(int cmd) const {
   return cmd == m_cmd_rd || cmd == m_cmd_rda;
+}
+
+bool LPDDR5PIMController::would_block_host_request(const Request& req) const {
+  if (req.type_id != Request::Type::Read && req.type_id != Request::Type::Write) {
+    return false;
+  }
+  return m_pim_rank_mode != PIMRankMode::SingleBank;
 }
 
 void LPDDR5PIMController::extend_wck_expiry(int cmd) {
@@ -317,6 +375,10 @@ bool LPDDR5PIMController::would_block_activating(int cmd, const AddrVec_t& addr_
   const auto& meta = m_device.m_spec->command_meta[cmd];
   if (!meta.is_closing && !meta.is_refreshing) return false;
 
+  if (m_pim_ab_inflight) {
+    return true;
+  }
+
   bool blocked = false;
   m_device.for_each_target_bank_while(cmd, addr_vec, [&](int bank_id) {
     if (m_act2_owner_valid[bank_id] || !m_inflight_pim[bank_id].empty()) {
@@ -329,6 +391,36 @@ bool LPDDR5PIMController::would_block_activating(int cmd, const AddrVec_t& addr_
 }
 
 bool LPDDR5PIMController::would_block_pim_launch(const Request& req) {
+  if (req.final_command == m_cmd_pim_bcast) {
+    if (req.command == m_cmd_hab) {
+      return false;
+    }
+    if (m_pim_rank_mode != PIMRankMode::HostAllBank) {
+      s_pim_mode_stalls++;
+      return true;
+    }
+    return false;
+  }
+
+  if (req.final_command == m_cmd_pim_mac_ab) {
+    if (req.command == m_cmd_hab_pim) {
+      return false;
+    }
+    if (m_pim_rank_mode != PIMRankMode::PIMAllBank) {
+      s_pim_mode_stalls++;
+      return true;
+    }
+    if (!m_pim_all_bank_load_ready) {
+      s_pim_load_stalls++;
+      return true;
+    }
+    if (m_pim_ab_inflight) {
+      s_pim_capacity_stalls++;
+      return true;
+    }
+    return false;
+  }
+
   if (req.final_command != m_cmd_pim_mac || req.command != m_cmd_pim_mac) {
     return false;
   }
@@ -363,17 +455,17 @@ bool LPDDR5PIMController::is_owned_act2_candidate(const Request& req) const {
 
 ControllerBase::Candidate LPDDR5PIMController::select_normal_candidate() {
   Candidate cand = pick_best_ready_from(m_active_buffer, [&](const Request& req) {
-    return !would_block_pim_launch(req);
+    return !would_block_host_request(req) && !would_block_pim_launch(req);
   });
   if (!cand.valid) {
     cand = pick_priority_if([&](const Request& req) {
-      return !would_block_pim_launch(req) && is_owned_act2_candidate(req) &&
+      return !would_block_host_request(req) && !would_block_pim_launch(req) && is_owned_act2_candidate(req) &&
              !would_block_activating(req.command, req.addr_vec);
     });
   }
   if (!cand.valid && m_priority_buffer.size() == 0) {
     cand = pick_rw_if([&](const Request& req) {
-      return !would_block_pim_launch(req) && is_owned_act2_candidate(req) &&
+      return !would_block_host_request(req) && !would_block_pim_launch(req) && is_owned_act2_candidate(req) &&
              !would_block_activating(req.command, req.addr_vec);
     });
   }
@@ -386,7 +478,38 @@ uint64_t LPDDR5PIMController::get_pim_dependency_id(const Request& req) const {
   return (row << 32) | column;
 }
 
+void LPDDR5PIMController::update_pim_observability() {
+  size_t simultaneous_active_banks = 0;
+  for (int flat_bank_id = 0; flat_bank_id < static_cast<int>(m_pim_slots_in_use.size()); flat_bank_id++) {
+    size_t inflight = static_cast<size_t>(m_pim_slots_in_use[flat_bank_id]);
+    if (inflight > 0) {
+      simultaneous_active_banks++;
+    }
+    if (flat_bank_id < kObservedPimBanks && inflight > s_pim_inflight_peak_per_bank[flat_bank_id]) {
+      s_pim_inflight_peak_per_bank[flat_bank_id] = inflight;
+    }
+  }
+  if (simultaneous_active_banks > s_pim_simultaneous_active_banks_peak) {
+    s_pim_simultaneous_active_banks_peak = simultaneous_active_banks;
+  }
+}
+
 void LPDDR5PIMController::complete_pim_if_ready() {
+  if (m_pim_ab_inflight && m_pim_ab_done_clk <= m_clk) {
+    m_pim_ab_request.depart = m_pim_ab_done_clk;
+    s_num_pim_reqs_served++;
+    s_num_pim_ab_reqs_served++;
+    s_pim_latency += (m_pim_ab_request.depart - m_pim_ab_request.arrive);
+    if (m_pim_ab_request.callback) {
+      m_pim_ab_request.callback(m_pim_ab_request);
+    }
+    m_pim_ab_inflight = false;
+    m_pim_ab_done_clk = -1;
+    s_pim_simultaneous_active_banks_peak = std::max(
+        s_pim_simultaneous_active_banks_peak,
+        static_cast<size_t>(m_device.m_bank_nodes.size()));
+  }
+
   for (int flat_bank_id = 0; flat_bank_id < static_cast<int>(m_inflight_pim.size()); flat_bank_id++) {
     auto& inflight_bank = m_inflight_pim[flat_bank_id];
     for (auto it = inflight_bank.begin(); it != inflight_bank.end();) {
@@ -404,9 +527,48 @@ void LPDDR5PIMController::complete_pim_if_ready() {
       }
 
       m_pim_slots_in_use[flat_bank_id]--;
+      update_pim_observability();
       it = inflight_bank.erase(it);
     }
   }
+}
+
+void LPDDR5PIMController::handle_mode_or_bcast_completion(Request& req) {
+  if (req.command == m_cmd_sb) {
+    m_pim_rank_mode = PIMRankMode::SingleBank;
+  } else if (req.command == m_cmd_hab) {
+    m_pim_rank_mode = PIMRankMode::HostAllBank;
+    m_pim_all_bank_load_ready = false;
+  } else if (req.command == m_cmd_hab_pim) {
+    m_pim_rank_mode = PIMRankMode::PIMAllBank;
+  } else if (req.command == m_cmd_pim_bcast) {
+    m_pim_all_bank_load_ready = true;
+  }
+}
+
+void LPDDR5PIMController::launch_inflight_pim_ab(Candidate cand) {
+  assert(cand.it->final_command == m_cmd_pim_mac_ab);
+  assert(!m_pim_ab_inflight);
+  assert(m_pim_all_bank_load_ready);
+
+  m_pim_ab_request = *cand.it;
+  m_pim_ab_request.depart = -1;
+  m_pim_ab_done_clk = m_clk + m_nPIM_MAC_LAT + 1;
+  m_pim_ab_inflight = true;
+  m_pim_all_bank_load_ready = false;
+  s_pim_ab_inflight_peak = std::max(s_pim_ab_inflight_peak, static_cast<size_t>(1));
+  s_pim_inflight_peak = std::max(s_pim_inflight_peak, static_cast<size_t>(m_device.m_bank_nodes.size()));
+  s_pim_simultaneous_active_banks_peak = std::max(
+      s_pim_simultaneous_active_banks_peak,
+      static_cast<size_t>(m_device.m_bank_nodes.size()));
+  for (int flat_bank_id = 0; flat_bank_id < kObservedPimBanks; flat_bank_id++) {
+    s_pim_launches_per_bank[flat_bank_id]++;
+    s_pim_inflight_peak_per_bank[flat_bank_id] = std::max(
+        s_pim_inflight_peak_per_bank[flat_bank_id],
+        static_cast<size_t>(1));
+  }
+
+  cand.buffer->remove(cand.it);
 }
 
 void LPDDR5PIMController::launch_inflight_pim(Candidate cand, int flat_bank_id) {
@@ -422,6 +584,9 @@ void LPDDR5PIMController::launch_inflight_pim(Candidate cand, int flat_bank_id) 
   }
 
   m_pim_slots_in_use[flat_bank_id]++;
+  if (flat_bank_id < kObservedPimBanks) {
+    s_pim_launches_per_bank[flat_bank_id]++;
+  }
   m_inflight_pim[flat_bank_id].push_back(InflightPIM{
       .dependency_id = get_pim_dependency_id(launched_req),
       .start_clk = m_clk,
@@ -431,6 +596,7 @@ void LPDDR5PIMController::launch_inflight_pim(Candidate cand, int flat_bank_id) 
   if (static_cast<size_t>(m_pim_slots_in_use[flat_bank_id]) > s_pim_inflight_peak) {
     s_pim_inflight_peak = m_pim_slots_in_use[flat_bank_id];
   }
+  update_pim_observability();
 
   cand.buffer->remove(cand.it);
 }
@@ -569,9 +735,13 @@ void LPDDR5PIMController::issue_standard_candidate(Candidate cand) {
     cand.it->final_command = saved_final_command;
   }
   int cmd = cand.it->command;
-  int flat_bank_id = m_device.get_flat_bank_id(cand.it->addr_vec);
+  int flat_bank_id = -1;
+  if (m_device.m_spec->bank_targets[cmd] == BankTarget::Single) {
+    flat_bank_id = m_device.get_flat_bank_id(cand.it->addr_vec);
+  }
 
   if (cmd == m_cmd_act1) {
+    assert(flat_bank_id >= 0);
     assert(!m_act2_owner_valid[flat_bank_id]);
   }
 
@@ -591,11 +761,18 @@ void LPDDR5PIMController::issue_standard_candidate(Candidate cand) {
     p->on_issue(*cand.it);
   }
 
+  if (cmd == m_cmd_sb || cmd == m_cmd_hab || cmd == m_cmd_hab_pim || cmd == m_cmd_pim_bcast) {
+    handle_mode_or_bcast_completion(*cand.it);
+  }
+
   if (cmd == m_cmd_act1) {
     move_to_activating(cand.it, *cand.buffer);
   } else if (cand.it->command == cand.it->final_command) {
     if (cand.it->final_command == m_cmd_pim_mac) {
       launch_inflight_pim(cand, flat_bank_id);
+      return;
+    } else if (cand.it->final_command == m_cmd_pim_mac_ab) {
+      launch_inflight_pim_ab(cand);
       return;
     }
     retire_request(cand.it, *cand.buffer);

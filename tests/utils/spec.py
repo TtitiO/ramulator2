@@ -8,7 +8,7 @@ and curve extraction.
 import ramulator
 from ramulator.dram.spec import DRAMStandard
 
-from tests.latency_throughput.testcases import STANDARDS
+from tests.analysis.testcases import STANDARDS
 from tests.utils.dram import create_dram
 
 

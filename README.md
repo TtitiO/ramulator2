@@ -442,7 +442,7 @@ This is the fastest confidence check after a build or a local code change.
 Fast latency-throughput is the main modeling-fidelity check used in day-to-day development. It should finish in just a few minutes.
 
 ```bash
-PYTHONPATH=python pytest tests/latency_throughput/test_fast.py -v -s
+PYTHONPATH=python pytest tests/analysis/test_fast.py -v -s
 ```
 
 It does three things for each DRAM standard:
@@ -454,13 +454,13 @@ It does three things for each DRAM standard:
 It also writes annotated plots to:
 
 ```text
-tests/latency_throughput/plots/fast/
+tests/analysis/plots/fast/
 ```
 
 If you only want one standard:
 
 ```bash
-PYTHONPATH=python pytest tests/latency_throughput/test_fast.py -v -s -k DDR4
+PYTHONPATH=python pytest tests/analysis/test_fast.py -v -s -k DDR4
 ```
 
 ### 5.4 Full Latency-Throughput
@@ -468,7 +468,7 @@ PYTHONPATH=python pytest tests/latency_throughput/test_fast.py -v -s -k DDR4
 Full latency-throughput is a longer run with refresh enabled:
 
 ```bash
-PYTHONPATH=python pytest tests/latency_throughput/test_full.py -v -s
+PYTHONPATH=python pytest tests/analysis/test_full.py -v -s
 ```
 
 ### 5.5 Device Timings
@@ -984,7 +984,7 @@ Code generation imports modules under `python/ramulator/dram/`, discovers these 
 
 ### 8.5 Adding a New Standard to Latency-Throughput
 
-After the DRAM definition exists, add a testcase file in `tests/latency_throughput/testcases/`.
+After the DRAM definition exists, add a testcase file in `tests/analysis/testcases/`.
 
 The current latency-throughput flow expects a config shape like this:
 
@@ -1016,8 +1016,8 @@ Then run:
 
 ```bash
 PYTHONPATH=python pytest tests/smoke -v -k MyStandard
-PYTHONPATH=python pytest tests/latency_throughput/test_fast.py -v -s -k MyStandard
-PYTHONPATH=python pytest tests/latency_throughput/test_full.py -v -s -k MyStandard
+PYTHONPATH=python pytest tests/analysis/test_fast.py -v -s -k MyStandard
+PYTHONPATH=python pytest tests/analysis/test_full.py -v -s -k MyStandard
 ```
 
 ## 9. How Ramulator Works Internally

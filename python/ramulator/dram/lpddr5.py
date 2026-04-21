@@ -7,6 +7,100 @@ class LPDDR5(DRAMStandard):
     name = "LPDDR5"
     internal_prefetch_size = 16      # BL16
     read_latency = "nCL + nBL"
+    power_commands_counted = ["ACT", "PRE", "RD", "WR", "REF"]
+    power_command_hooks = [
+        ("Bank", "ACT2", "ACT"),
+        ("Bank", "PREpb", "PRE"),
+        ("Bank", "RD", "RD"),
+        ("Bank", "WR", "WR"),
+        ("Rank", "ACT2", "ACT"),
+        ("Rank", "PREpb", "PRE"),
+        ("Rank", "PREab", "PREA"),
+        ("Rank", "REFab", "REFab"),
+    ]
+    power_command_energy_timings = {
+        "ACT": "nRAS",
+        "PRE": "nRP",
+        "RD": "nBL",
+        "WR": "nBL",
+        "REF": "nRFC",
+    }
+    power_parameter_fields = [
+        "VDD1",
+        "VDD2H",
+        "VDD2L",
+        "VDDQ",
+        "IDD01",
+        "IDD02H",
+        "IDD02L",
+        "IDD0Q",
+        "IDD2N1",
+        "IDD2N2H",
+        "IDD2N2L",
+        "IDD2NQ",
+        "IDD3N1",
+        "IDD3N2H",
+        "IDD3N2L",
+        "IDD3NQ",
+        "IDD4R1",
+        "IDD4R2H",
+        "IDD4R2L",
+        "IDD4RQ",
+        "IDD4W1",
+        "IDD4W2H",
+        "IDD4W2L",
+        "IDD4WQ",
+        "IDD5AB1",
+        "IDD5AB2H",
+        "IDD5AB2L",
+        "IDD5ABQ",
+    ]
+    power_background_energy_terms = {
+        "active": [
+            ("VDD1", "IDD3N1"),
+            ("VDD2H", "IDD3N2H"),
+            ("VDD2L", "IDD3N2L"),
+            ("VDDQ", "IDD3NQ"),
+        ],
+        "idle": [
+            ("VDD1", "IDD2N1"),
+            ("VDD2H", "IDD2N2H"),
+            ("VDD2L", "IDD2N2L"),
+            ("VDDQ", "IDD2NQ"),
+        ],
+    }
+    power_command_energy_terms = {
+        "ACT": [
+            ("VDD1", "IDD01", "IDD3N1"),
+            ("VDD2H", "IDD02H", "IDD3N2H"),
+            ("VDD2L", "IDD02L", "IDD3N2L"),
+            ("VDDQ", "IDD0Q", "IDD3NQ"),
+        ],
+        "PRE": [
+            ("VDD1", "IDD01", "IDD2N1"),
+            ("VDD2H", "IDD02H", "IDD2N2H"),
+            ("VDD2L", "IDD02L", "IDD2N2L"),
+            ("VDDQ", "IDD0Q", "IDD2NQ"),
+        ],
+        "RD": [
+            ("VDD1", "IDD4R1", "IDD3N1"),
+            ("VDD2H", "IDD4R2H", "IDD3N2H"),
+            ("VDD2L", "IDD4R2L", "IDD3N2L"),
+            ("VDDQ", "IDD4RQ", "IDD3NQ"),
+        ],
+        "WR": [
+            ("VDD1", "IDD4W1", "IDD3N1"),
+            ("VDD2H", "IDD4W2H", "IDD3N2H"),
+            ("VDD2L", "IDD4W2L", "IDD3N2L"),
+            ("VDDQ", "IDD4WQ", "IDD3NQ"),
+        ],
+        "REF": [
+            ("VDD1", "IDD5AB1", None),
+            ("VDD2H", "IDD5AB2H", None),
+            ("VDD2L", "IDD5AB2L", None),
+            ("VDDQ", "IDD5ABQ", None),
+        ],
+    }
 
     # ---- Hierarchy (level name -> init state) ----
     levels = {

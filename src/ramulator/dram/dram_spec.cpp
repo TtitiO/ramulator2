@@ -8,6 +8,23 @@ void DRAMSpec::load_config(const ConfigNode& config) {
   // Optional PIM capacity knob (defaults to 1 for non-PIM configs)
   pim_blocks_per_bank = dram["pim_blocks_per_bank"].as<int>(1);
 
+  // Optional built-in DRAM power parameters
+  const ConfigNode power = dram["power"];
+  power_params.clear();
+  if (power && power.is_map()) {
+    drampower_enable = power["enabled"].as<bool>(false);
+    power_debug = power["debug"].as<bool>(false);
+    for (const auto& kv : power.map()) {
+      if (kv.first == "enabled" || kv.first == "debug") {
+        continue;
+      }
+      power_params[kv.first] = kv.second.as<double>(0.0);
+    }
+  } else {
+    drampower_enable = false;
+    power_debug = false;
+  }
+
   // Organization
   channel_width = dram["channel_width"].as<int>();
   ConfigNode org = dram["org"];
