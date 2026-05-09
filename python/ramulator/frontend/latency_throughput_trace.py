@@ -23,6 +23,7 @@ class LatencyThroughputTrace(Component):
     pim_same_bank = Param(bool, default=True)
     pim_bank_group_size = Param(int, default=0)
     pim_bank_sequence = Param(str, default='')
+    pim_bank_sequence_order = Param(str, default='frontend')
     pim_burst_length = Param(int, default=1)
     pim_dependency_count = Param(int, default=1)
     pim_row_start = Param(int, default=0)

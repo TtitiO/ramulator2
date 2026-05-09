@@ -16,6 +16,12 @@ import matplotlib.pyplot as plt
 from matplotlib.colors import LinearSegmentedColormap
 
 
+LPDDR5_PIM_ARCH_LABELS = {
+    "1b": "Dedicated MPU, banks/MPU=1",
+    "2b": "Shared MPU, banks/MPU=2",
+}
+
+
 def plot_lat_tp(
     curves,
     std_name,
@@ -859,12 +865,12 @@ def plot_lpddr5_pim_avg_power_vs_nop_representative_cases(
     os.makedirs(output_dir, exist_ok=True)
 
     subplot_cases = [
-        ("1-bank", "single_bank_1block", "single_bank_2block"),
-        ("2-bank RR", "rr_2bank_1block", "rr_2bank_2block"),
         ("4-bank RR", "rr_4bank_1block", "rr_4bank_2block"),
+        ("8-bank RR", "rr_8bank_1block", "rr_8bank_2block"),
+        ("16-bank RR", "rr_16bank_1block", "rr_16bank_2block"),
     ]
 
-    fig, axes = plt.subplots(1, 3, figsize=(15.0, 4.8), sharey=False)
+    fig, axes = plt.subplots(1, 3, figsize=(14.2, 4.8), sharey=False)
     fig.patch.set_facecolor("white")
 
     colors = {
@@ -880,8 +886,8 @@ def plot_lpddr5_pim_avg_power_vs_nop_representative_cases(
         y1 = [series_1b[n]["analytical_avg_power_mW"] for n in nops]
         y2 = [series_2b[n]["analytical_avg_power_mW"] for n in nops]
 
-        ax.plot(nops, y1, "o-", color=colors["1b"], linewidth=2.0, markersize=4.5, label="1 block/bank")
-        ax.plot(nops, y2, "s-", color=colors["2b"], linewidth=2.0, markersize=4.5, label="2 blocks/bank")
+        ax.plot(nops, y1, "o-", color=colors["1b"], linewidth=2.0, markersize=4.5, label=LPDDR5_PIM_ARCH_LABELS["1b"])
+        ax.plot(nops, y2, "s-", color=colors["2b"], linewidth=2.0, markersize=4.5, label=LPDDR5_PIM_ARCH_LABELS["2b"])
         ax.set_title(title, fontsize=12, pad=8)
         ax.set_xlabel("NOP", fontsize=11, labelpad=6)
         ax.set_xlim(min(nops), max(nops))
@@ -914,12 +920,12 @@ def plot_lpddr5_pim_latency_vs_nop_representative_cases(
     os.makedirs(output_dir, exist_ok=True)
 
     subplot_cases = [
-        ("1-bank", "single_bank_1block", "single_bank_2block"),
-        ("2-bank RR", "rr_2bank_1block", "rr_2bank_2block"),
         ("4-bank RR", "rr_4bank_1block", "rr_4bank_2block"),
+        ("8-bank RR", "rr_8bank_1block", "rr_8bank_2block"),
+        ("16-bank RR", "rr_16bank_1block", "rr_16bank_2block"),
     ]
 
-    fig, axes = plt.subplots(1, 3, figsize=(15.0, 4.8), sharey=False)
+    fig, axes = plt.subplots(1, 3, figsize=(14.2, 4.8), sharey=False)
     fig.patch.set_facecolor("white")
 
     colors = {
@@ -935,8 +941,8 @@ def plot_lpddr5_pim_latency_vs_nop_representative_cases(
         y1 = [series_1b[n]["avg_pim_latency_ns"] for n in nops]
         y2 = [series_2b[n]["avg_pim_latency_ns"] for n in nops]
 
-        ax.plot(nops, y1, "o-", color=colors["1b"], linewidth=2.0, markersize=4.5, label="1 block/bank")
-        ax.plot(nops, y2, "s-", color=colors["2b"], linewidth=2.0, markersize=4.5, label="2 blocks/bank")
+        ax.plot(nops, y1, "o-", color=colors["1b"], linewidth=2.0, markersize=4.5, label=LPDDR5_PIM_ARCH_LABELS["1b"])
+        ax.plot(nops, y2, "s-", color=colors["2b"], linewidth=2.0, markersize=4.5, label=LPDDR5_PIM_ARCH_LABELS["2b"])
         ax.set_title(title, fontsize=12, pad=8)
         ax.set_xlabel("NOP", fontsize=11, labelpad=6)
         ax.set_xlim(min(nops), max(nops))
@@ -961,6 +967,118 @@ def plot_lpddr5_pim_latency_vs_nop_representative_cases(
     return path
 
 
+def plot_lpddr5_pim_mpu_group_stalls_vs_nop_representative_cases(
+    case_series, output_dir="tests/analysis/plots/fast"
+):
+    """Generate LPDDR5PIM MPU-group stall vs NOP PNG for bank-count sensitivity cases."""
+
+    os.makedirs(output_dir, exist_ok=True)
+
+    representative_shared_point = case_series["rr_4bank_2block"][1]
+    assert representative_shared_point["active_banks"] == 4
+    assert representative_shared_point["pim_banks_per_mpu"] == 2
+    assert representative_shared_point["pim_bank_sequence_order"] == "controller"
+    assert representative_shared_point["input_bank_sequence"] == [0, 1, 2, 3]
+    assert representative_shared_point["resolved_controller_bank_sequence"] == [0, 1, 2, 3]
+    assert representative_shared_point["resolved_mpu_group_sequence"] == [0, 0, 1, 1]
+    assert representative_shared_point["pim_mpu_group_stalls"] > 0
+
+    subplot_cases = [
+        ("4-bank RR", "rr_4bank_1block", "rr_4bank_2block"),
+        ("8-bank RR", "rr_8bank_1block", "rr_8bank_2block"),
+        ("16-bank RR", "rr_16bank_1block", "rr_16bank_2block"),
+    ]
+
+    fig, axes = plt.subplots(1, 3, figsize=(14.2, 4.8), sharey=False)
+    fig.patch.set_facecolor("white")
+    colors = {"1b": "#1f77b4", "2b": "#d62728"}
+
+    for ax, (title, case_1b, case_2b) in zip(axes, subplot_cases):
+        ax.set_facecolor("white")
+        series_1b = case_series[case_1b]
+        series_2b = case_series[case_2b]
+        nops = [n for n in sorted(set(series_1b.keys()) & set(series_2b.keys())) if n <= 20]
+        y1 = [series_1b[n].get("pim_mpu_group_stalls", 0) for n in nops]
+        y2 = [series_2b[n].get("pim_mpu_group_stalls", 0) for n in nops]
+
+        ax.plot(nops, y1, "o-", color=colors["1b"], linewidth=2.0, markersize=4.5, label=LPDDR5_PIM_ARCH_LABELS["1b"])
+        ax.plot(nops, y2, "s-", color=colors["2b"], linewidth=2.0, markersize=4.5, label=LPDDR5_PIM_ARCH_LABELS["2b"])
+        ax.set_title(title, fontsize=12, pad=8)
+        ax.set_xlabel("NOP", fontsize=11, labelpad=6)
+        ax.set_xlim(min(nops), max(nops))
+        ymax = max(y1 + y2)
+        margin = max(ymax * 0.12, 1.0)
+        ax.set_ylim(0, ymax + margin)
+        ax.grid(True, linestyle="--", linewidth=0.7, alpha=0.35)
+        ax.tick_params(axis="both", which="major", labelsize=9.5)
+        for spine in ax.spines.values():
+            spine.set_linewidth(1.0)
+
+    axes[0].set_ylabel("MPU-group stalls", fontsize=11, labelpad=6)
+    legend = axes[-1].legend(loc="best", fontsize=9, frameon=True, framealpha=0.95, edgecolor="#888")
+    legend.get_frame().set_linewidth(0.9)
+
+    fig.suptitle("LPDDR5PIM Shared-MPU Stalls vs NOP (NOP ≤ 20)", fontsize=14, y=1.02)
+    fig.tight_layout(pad=1.0)
+    path = os.path.join(output_dir, "lpddr5_pim_mpu_group_stalls_vs_nop_representative_cases.png")
+    fig.savefig(path, dpi=300, bbox_inches="tight", pad_inches=0.08)
+    plt.close(fig)
+    return path
+
+
+def plot_lpddr5_pim_bank_count_sensitivity_same_nop(
+    case_series, output_dir="tests/analysis/plots/fast", nop=1
+):
+    """Generate LPDDR5PIM bank-count sensitivity PNG at one NOP point."""
+
+    os.makedirs(output_dir, exist_ok=True)
+    bank_counts = [4, 8, 16]
+    colors = {"1b": "#1f77b4", "2b": "#d62728"}
+    markers = {"1b": "o", "2b": "s"}
+
+    def points(metric, suffix):
+        values = []
+        for bank_count in bank_counts:
+            case = f"rr_{bank_count}bank_{suffix}"
+            values.append(case_series[case][nop][metric])
+        return values
+
+    fig, axes = plt.subplots(1, 2, figsize=(11.2, 4.6), sharex=True)
+    fig.patch.set_facecolor("white")
+    panels = [
+        ("measured_throughput", "PIM request throughput (req/ns)", "Throughput"),
+        ("pim_mpu_group_stalls", "MPU-group stalls", "Shared-MPU stalls"),
+    ]
+    for ax, (metric, ylabel, title) in zip(axes, panels):
+        ax.set_facecolor("white")
+        for suffix, label_key in (("1block", "1b"), ("2block", "2b")):
+            ax.plot(
+                bank_counts,
+                points(metric, suffix),
+                marker=markers[label_key],
+                color=colors[label_key],
+                linewidth=2.0,
+                markersize=5.5,
+                label=LPDDR5_PIM_ARCH_LABELS[label_key],
+            )
+        ax.set_title(title, fontsize=12, pad=8)
+        ax.set_xlabel("Total banks", fontsize=11, labelpad=6)
+        ax.set_ylabel(ylabel, fontsize=11, labelpad=6)
+        ax.set_xticks(bank_counts)
+        ax.grid(True, linestyle="--", linewidth=0.7, alpha=0.35)
+        ax.tick_params(axis="both", which="major", labelsize=9.5)
+        for spine in ax.spines.values():
+            spine.set_linewidth(1.0)
+    legend = axes[-1].legend(loc="best", fontsize=9, frameon=True, framealpha=0.95, edgecolor="#888")
+    legend.get_frame().set_linewidth(0.9)
+    fig.suptitle(f"LPDDR5PIM Bank-Count / Shared-MPU Sensitivity at NOP={nop}", fontsize=14, y=1.02)
+    fig.tight_layout(pad=1.0)
+    path = os.path.join(output_dir, "lpddr5_pim_bank_count_shared_mpu_sensitivity_same_nop.png")
+    fig.savefig(path, dpi=300, bbox_inches="tight", pad_inches=0.08)
+    plt.close(fig)
+    return path
+
+
 def plot_lpddr5_pim_edp_vs_nop_representative_cases(
     case_series, output_dir="tests/analysis/plots/fast"
 ):
@@ -969,12 +1087,12 @@ def plot_lpddr5_pim_edp_vs_nop_representative_cases(
     os.makedirs(output_dir, exist_ok=True)
 
     subplot_cases = [
-        ("1-bank", "single_bank_1block", "single_bank_2block"),
-        ("2-bank RR", "rr_2bank_1block", "rr_2bank_2block"),
         ("4-bank RR", "rr_4bank_1block", "rr_4bank_2block"),
+        ("8-bank RR", "rr_8bank_1block", "rr_8bank_2block"),
+        ("16-bank RR", "rr_16bank_1block", "rr_16bank_2block"),
     ]
 
-    fig, axes = plt.subplots(1, 3, figsize=(15.0, 4.8), sharey=False)
+    fig, axes = plt.subplots(1, 3, figsize=(14.2, 4.8), sharey=False)
     fig.patch.set_facecolor("white")
 
     colors = {
@@ -987,11 +1105,11 @@ def plot_lpddr5_pim_edp_vs_nop_representative_cases(
         series_1b = case_series[case_1b]
         series_2b = case_series[case_2b]
         nops = [n for n in sorted(set(series_1b.keys()) & set(series_2b.keys())) if n <= 20]
-        y1 = [series_1b[n]["analytical_energy_estimate_pJ"] * series_1b[n]["avg_pim_latency_ns"] for n in nops]
-        y2 = [series_2b[n]["analytical_energy_estimate_pJ"] * series_2b[n]["avg_pim_latency_ns"] for n in nops]
+        y1 = [series_1b[n]["full_system_edp_pJ_ns"] for n in nops]
+        y2 = [series_2b[n]["full_system_edp_pJ_ns"] for n in nops]
 
-        ax.plot(nops, y1, "o-", color=colors["1b"], linewidth=2.0, markersize=4.5, label="1 block/bank")
-        ax.plot(nops, y2, "s-", color=colors["2b"], linewidth=2.0, markersize=4.5, label="2 blocks/bank")
+        ax.plot(nops, y1, "o-", color=colors["1b"], linewidth=2.0, markersize=4.5, label=LPDDR5_PIM_ARCH_LABELS["1b"])
+        ax.plot(nops, y2, "s-", color=colors["2b"], linewidth=2.0, markersize=4.5, label=LPDDR5_PIM_ARCH_LABELS["2b"])
         ax.set_title(title, fontsize=12, pad=8)
         ax.set_xlabel("NOP", fontsize=11, labelpad=6)
         ax.set_xlim(min(nops), max(nops))
@@ -1027,9 +1145,9 @@ def plot_lpddr5_pim_avg_power_vs_nop_representative_cases_plotly(
     os.makedirs(output_dir, exist_ok=True)
 
     subplot_cases = [
-        ("1-bank", "single_bank_1block", "single_bank_2block"),
-        ("2-bank RR", "rr_2bank_1block", "rr_2bank_2block"),
         ("4-bank RR", "rr_4bank_1block", "rr_4bank_2block"),
+        ("8-bank RR", "rr_8bank_1block", "rr_8bank_2block"),
+        ("16-bank RR", "rr_16bank_1block", "rr_16bank_2block"),
     ]
 
     fig = make_subplots(rows=1, cols=3, subplot_titles=[title for title, _, _ in subplot_cases], shared_yaxes=False)
@@ -1047,7 +1165,7 @@ def plot_lpddr5_pim_avg_power_vs_nop_representative_cases_plotly(
                 x=nops,
                 y=[series_1b[n]["analytical_avg_power_mW"] for n in nops],
                 mode="lines+markers",
-                name="1 block/bank",
+                name=LPDDR5_PIM_ARCH_LABELS["1b"],
                 legendgroup="1b",
                 showlegend=(idx == 1),
                 line=dict(color=colors["1b"], width=2.0),
@@ -1061,7 +1179,7 @@ def plot_lpddr5_pim_avg_power_vs_nop_representative_cases_plotly(
                 x=nops,
                 y=[series_2b[n]["analytical_avg_power_mW"] for n in nops],
                 mode="lines+markers",
-                name="2 blocks/bank",
+                name=LPDDR5_PIM_ARCH_LABELS["2b"],
                 legendgroup="2b",
                 showlegend=(idx == 1),
                 line=dict(color=colors["2b"], width=2.0),
@@ -1099,9 +1217,9 @@ def plot_lpddr5_pim_latency_vs_nop_representative_cases_plotly(
     os.makedirs(output_dir, exist_ok=True)
 
     subplot_cases = [
-        ("1-bank", "single_bank_1block", "single_bank_2block"),
-        ("2-bank RR", "rr_2bank_1block", "rr_2bank_2block"),
         ("4-bank RR", "rr_4bank_1block", "rr_4bank_2block"),
+        ("8-bank RR", "rr_8bank_1block", "rr_8bank_2block"),
+        ("16-bank RR", "rr_16bank_1block", "rr_16bank_2block"),
     ]
 
     fig = make_subplots(rows=1, cols=3, subplot_titles=[title for title, _, _ in subplot_cases], shared_yaxes=False)
@@ -1119,7 +1237,7 @@ def plot_lpddr5_pim_latency_vs_nop_representative_cases_plotly(
                 x=nops,
                 y=[series_1b[n]["avg_pim_latency_ns"] for n in nops],
                 mode="lines+markers",
-                name="1 block/bank",
+                name=LPDDR5_PIM_ARCH_LABELS["1b"],
                 legendgroup="1b",
                 showlegend=(idx == 1),
                 line=dict(color=colors["1b"], width=2.0),
@@ -1133,7 +1251,7 @@ def plot_lpddr5_pim_latency_vs_nop_representative_cases_plotly(
                 x=nops,
                 y=[series_2b[n]["avg_pim_latency_ns"] for n in nops],
                 mode="lines+markers",
-                name="2 blocks/bank",
+                name=LPDDR5_PIM_ARCH_LABELS["2b"],
                 legendgroup="2b",
                 showlegend=(idx == 1),
                 line=dict(color=colors["2b"], width=2.0),
@@ -1171,9 +1289,9 @@ def plot_lpddr5_pim_edp_vs_nop_representative_cases_plotly(
     os.makedirs(output_dir, exist_ok=True)
 
     subplot_cases = [
-        ("1-bank", "single_bank_1block", "single_bank_2block"),
-        ("2-bank RR", "rr_2bank_1block", "rr_2bank_2block"),
         ("4-bank RR", "rr_4bank_1block", "rr_4bank_2block"),
+        ("8-bank RR", "rr_8bank_1block", "rr_8bank_2block"),
+        ("16-bank RR", "rr_16bank_1block", "rr_16bank_2block"),
     ]
 
     fig = make_subplots(rows=1, cols=3, subplot_titles=[title for title, _, _ in subplot_cases], shared_yaxes=False)
@@ -1189,9 +1307,9 @@ def plot_lpddr5_pim_edp_vs_nop_representative_cases_plotly(
         fig.add_trace(
             go.Scatter(
                 x=nops,
-                y=[series_1b[n]["analytical_energy_estimate_pJ"] * series_1b[n]["avg_pim_latency_ns"] for n in nops],
+                y=[series_1b[n]["full_system_edp_pJ_ns"] for n in nops],
                 mode="lines+markers",
-                name="1 block/bank",
+                name=LPDDR5_PIM_ARCH_LABELS["1b"],
                 legendgroup="1b",
                 showlegend=(idx == 1),
                 line=dict(color=colors["1b"], width=2.0),
@@ -1203,9 +1321,9 @@ def plot_lpddr5_pim_edp_vs_nop_representative_cases_plotly(
         fig.add_trace(
             go.Scatter(
                 x=nops,
-                y=[series_2b[n]["analytical_energy_estimate_pJ"] * series_2b[n]["avg_pim_latency_ns"] for n in nops],
+                y=[series_2b[n]["full_system_edp_pJ_ns"] for n in nops],
                 mode="lines+markers",
-                name="2 blocks/bank",
+                name=LPDDR5_PIM_ARCH_LABELS["2b"],
                 legendgroup="2b",
                 showlegend=(idx == 1),
                 line=dict(color=colors["2b"], width=2.0),
@@ -1216,14 +1334,14 @@ def plot_lpddr5_pim_edp_vs_nop_representative_cases_plotly(
         )
         fig.update_xaxes(title_text="NOP", row=1, col=idx)
         ymin = min([
-            series_1b[n]["analytical_energy_estimate_pJ"] * series_1b[n]["avg_pim_latency_ns"] for n in nops
+            series_1b[n]["full_system_edp_pJ_ns"] for n in nops
         ] + [
-            series_2b[n]["analytical_energy_estimate_pJ"] * series_2b[n]["avg_pim_latency_ns"] for n in nops
+            series_2b[n]["full_system_edp_pJ_ns"] for n in nops
         ])
         ymax = max([
-            series_1b[n]["analytical_energy_estimate_pJ"] * series_1b[n]["avg_pim_latency_ns"] for n in nops
+            series_1b[n]["full_system_edp_pJ_ns"] for n in nops
         ] + [
-            series_2b[n]["analytical_energy_estimate_pJ"] * series_2b[n]["avg_pim_latency_ns"] for n in nops
+            series_2b[n]["full_system_edp_pJ_ns"] for n in nops
         ])
         margin = max((ymax - ymin) * 0.12, ymax * 0.02, 0.2)
         fig.update_yaxes(range=[ymin - margin, ymax + margin], row=1, col=idx)

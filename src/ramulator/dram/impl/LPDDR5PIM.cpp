@@ -96,6 +96,7 @@ class LPDDR5PIM : public DRAMSpec {
       nCS,
       tCK_ps,
       nPIM_MAC_LAT,
+      nPIM_MAC_II,
       COUNT
     };
   };
@@ -125,10 +126,10 @@ class LPDDR5PIM : public DRAMSpec {
                "HAB", "HAB_PIM", "PIM_BCAST", "PIM_MAC", "PIM_MAC_AB"});
     set_names(states, state_names, {"Opened", "Closed", "Activating", "N_A", "PIM_SB", "PIM_HAB", "PIM_HAB_PIM"});
     set_names(timings, timing_names,
-              {"rate",    "nBL",     "nCL",   "nRCD",  "nRP",   "nRPab",  "nRAS",        "nRC",
-               "nWR",     "nRTP",    "nCWL",  "nPPD",  "nCCDS", "nCCDL",  "nCCDS_WR",    "nCCDL_WR",
-               "nRRDS",   "nRRDL",   "nWTRS", "nWTRL", "nFAW",  "nRFC",   "nRFCpb",      "nREFI",
-               "nREFIpb", "nWCKPST", "nCAS",  "nAAD",  "nCS",   "tCK_ps", "nPIM_MAC_LAT"});
+              {"rate",    "nBL",     "nCL",   "nRCD",  "nRP",   "nRPab",  "nRAS",         "nRC",
+               "nWR",     "nRTP",    "nCWL",  "nPPD",  "nCCDS", "nCCDL",  "nCCDS_WR",     "nCCDL_WR",
+               "nRRDS",   "nRRDL",   "nWTRS", "nWTRL", "nFAW",  "nRFC",   "nRFCpb",       "nREFI",
+               "nREFIpb", "nWCKPST", "nCAS",  "nAAD",  "nCS",   "tCK_ps", "nPIM_MAC_LAT", "nPIM_MAC_II"});
 
     // Static spec data
     internal_prefetch_size = 16;
@@ -365,37 +366,50 @@ class LPDDR5PIM : public DRAMSpec {
          (power_params.at("VDD2H") * (power_params.at("IDD4R2H") - power_params.at("IDD3N2H"))) +
          (power_params.at("VDD2L") * (power_params.at("IDD4R2L") - power_params.at("IDD3N2L"))) +
          (power_params.at("VDDQ") * (power_params.at("IDD4RQ") - power_params.at("IDD3NQ")))) *
-        rank_stats.incremental_command_counters[Command::PIM_MAC] * timing_vals[Timing::nPIM_MAC_LAT] * tCK_ns / 1E3;
+            rank_stats.incremental_command_counters[Command::PIM_MAC] * timing_vals[Timing::nPIM_MAC_LAT] * tCK_ns /
+            1E3 +
+        rank_stats.incremental_command_counters[Command::PIM_MAC] *
+            (pim_lanes * pim_compute_energy_pJ_per_mac + pim_cell_to_pim_energy_pJ_per_256b +
+             pim_interconnect_energy_pJ_per_256b + pim_vrf_access_energy_pJ + pim_srf_access_energy_pJ);
     double pim_mac_ab_incremental_cmd_energy =
         ((power_params.at("VDD1") * (power_params.at("IDD4R1") - power_params.at("IDD3N1"))) +
          (power_params.at("VDD2H") * (power_params.at("IDD4R2H") - power_params.at("IDD3N2H"))) +
          (power_params.at("VDD2L") * (power_params.at("IDD4R2L") - power_params.at("IDD3N2L"))) +
          (power_params.at("VDDQ") * (power_params.at("IDD4RQ") - power_params.at("IDD3NQ")))) *
-        rank_stats.incremental_command_counters[Command::PIM_MAC_AB] * timing_vals[Timing::nPIM_MAC_LAT] * tCK_ns / 1E3;
+            rank_stats.incremental_command_counters[Command::PIM_MAC_AB] * timing_vals[Timing::nPIM_MAC_LAT] * tCK_ns /
+            1E3 +
+        rank_stats.incremental_command_counters[Command::PIM_MAC_AB] *
+            (pim_lanes * pim_compute_energy_pJ_per_mac + pim_cell_to_pim_energy_pJ_per_256b +
+             pim_interconnect_energy_pJ_per_256b + pim_vrf_access_energy_pJ + pim_srf_access_energy_pJ);
     double pim_bcast_incremental_cmd_energy =
         ((power_params.at("VDD1") * (power_params.at("IDD01") - power_params.at("IDD2N1"))) +
          (power_params.at("VDD2H") * (power_params.at("IDD02H") - power_params.at("IDD2N2H"))) +
          (power_params.at("VDD2L") * (power_params.at("IDD02L") - power_params.at("IDD2N2L"))) +
          (power_params.at("VDDQ") * (power_params.at("IDD0Q") - power_params.at("IDD2NQ")))) *
-        rank_stats.incremental_command_counters[Command::PIM_BCAST] * timing_vals[Timing::nBL] * tCK_ns / 1E3;
+            rank_stats.incremental_command_counters[Command::PIM_BCAST] * timing_vals[Timing::nBL] * tCK_ns / 1E3 +
+        rank_stats.incremental_command_counters[Command::PIM_BCAST] *
+            (pim_cell_to_pim_energy_pJ_per_256b + pim_interconnect_energy_pJ_per_256b);
     double hab_incremental_cmd_energy =
         ((power_params.at("VDD1") * (power_params.at("IDD01") - power_params.at("IDD2N1"))) +
          (power_params.at("VDD2H") * (power_params.at("IDD02H") - power_params.at("IDD2N2H"))) +
          (power_params.at("VDD2L") * (power_params.at("IDD02L") - power_params.at("IDD2N2L"))) +
          (power_params.at("VDDQ") * (power_params.at("IDD0Q") - power_params.at("IDD2NQ")))) *
-        rank_stats.incremental_command_counters[Command::HAB] * timing_vals[Timing::nBL] * tCK_ns / 1E3;
+            rank_stats.incremental_command_counters[Command::HAB] * timing_vals[Timing::nBL] * tCK_ns / 1E3 +
+        rank_stats.incremental_command_counters[Command::HAB] * (pim_mode_switch_energy_pJ);
     double hab_pim_incremental_cmd_energy =
         ((power_params.at("VDD1") * (power_params.at("IDD01") - power_params.at("IDD2N1"))) +
          (power_params.at("VDD2H") * (power_params.at("IDD02H") - power_params.at("IDD2N2H"))) +
          (power_params.at("VDD2L") * (power_params.at("IDD02L") - power_params.at("IDD2N2L"))) +
          (power_params.at("VDDQ") * (power_params.at("IDD0Q") - power_params.at("IDD2NQ")))) *
-        rank_stats.incremental_command_counters[Command::HAB_PIM] * timing_vals[Timing::nBL] * tCK_ns / 1E3;
+            rank_stats.incremental_command_counters[Command::HAB_PIM] * timing_vals[Timing::nBL] * tCK_ns / 1E3 +
+        rank_stats.incremental_command_counters[Command::HAB_PIM] * (pim_mode_switch_energy_pJ);
     double sb_incremental_cmd_energy =
         ((power_params.at("VDD1") * (power_params.at("IDD01") - power_params.at("IDD2N1"))) +
          (power_params.at("VDD2H") * (power_params.at("IDD02H") - power_params.at("IDD2N2H"))) +
          (power_params.at("VDD2L") * (power_params.at("IDD02L") - power_params.at("IDD2N2L"))) +
          (power_params.at("VDDQ") * (power_params.at("IDD0Q") - power_params.at("IDD2NQ")))) *
-        rank_stats.incremental_command_counters[Command::SB] * timing_vals[Timing::nBL] * tCK_ns / 1E3;
+            rank_stats.incremental_command_counters[Command::SB] * timing_vals[Timing::nBL] * tCK_ns / 1E3 +
+        rank_stats.incremental_command_counters[Command::SB] * (pim_mode_switch_energy_pJ);
     rank_stats.incremental_command_energy_pJ = pim_mac_incremental_cmd_energy + pim_mac_ab_incremental_cmd_energy +
                                                pim_bcast_incremental_cmd_energy + hab_incremental_cmd_energy +
                                                hab_pim_incremental_cmd_energy + sb_incremental_cmd_energy;

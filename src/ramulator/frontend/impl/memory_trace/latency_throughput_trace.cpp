@@ -1,3 +1,5 @@
+#include <algorithm>
+
 #include <fmt/format.h>
 #include <optional>
 #include <random>
@@ -43,6 +45,7 @@ class LatencyThroughputTrace : public IFrontEnd, public Implementation {
   bool m_pim_same_bank = true;
   int m_pim_bank_group_size = 0;
   std::string m_pim_bank_sequence = "";
+  std::string m_pim_bank_sequence_order = "frontend";
   std::vector<int> m_pim_bank_sequence_values;
   int m_pim_burst_length = 1;
   int m_pim_dependency_count = 1;
@@ -93,6 +96,7 @@ class LatencyThroughputTrace : public IFrontEnd, public Implementation {
     RAMULATOR_PARSE_PARAM(m_pim_same_bank, bool, "pim_same_bank").default_val(true);
     RAMULATOR_PARSE_PARAM(m_pim_bank_group_size, int, "pim_bank_group_size").default_val(0);
     RAMULATOR_PARSE_PARAM(m_pim_bank_sequence, std::string, "pim_bank_sequence").default_val("");
+    RAMULATOR_PARSE_PARAM(m_pim_bank_sequence_order, std::string, "pim_bank_sequence_order").default_val("frontend");
     RAMULATOR_PARSE_PARAM(m_pim_burst_length, int, "pim_burst_length").default_val(1);
     RAMULATOR_PARSE_PARAM(m_pim_dependency_count, int, "pim_dependency_count").default_val(1);
     RAMULATOR_PARSE_PARAM(m_pim_row_start, int, "pim_row_start").default_val(0);
@@ -164,6 +168,10 @@ class LatencyThroughputTrace : public IFrontEnd, public Implementation {
     if (m_pim_distribution_mode != "same_bank" && m_pim_distribution_mode != "bank_sequence") {
       throw std::runtime_error(
           "LatencyThroughputTrace: pim_distribution_mode must be 'same_bank' or 'bank_sequence'");
+    }
+    if (m_pim_bank_sequence_order != "frontend" && m_pim_bank_sequence_order != "controller") {
+      throw std::runtime_error(
+          "LatencyThroughputTrace: pim_bank_sequence_order must be 'frontend' or 'controller'");
     }
     if (m_pim_distribution_mode == "same_bank") {
       if (!m_pim_bank_sequence.empty()) {
@@ -447,10 +455,18 @@ class LatencyThroughputTrace : public IFrontEnd, public Implementation {
     }
 
     int row_offset = static_cast<int>(((idx / m_pim_burst_length) / distribution_span / m_pim_dependency_count) % m_pim_row_count);
-    decompose_bank(flat_bank, av);
+    decompose_pim_bank(flat_bank, av);
     av[m_row_pos] = m_pim_row_start + row_offset;
     av[m_col_pos] = dep_ctx;
     return av;
+  }
+
+  void decompose_pim_bank(int flat, AddrVec_t& av) {
+    if (m_pim_bank_sequence_order == "controller") {
+      decompose_bank_controller_order(flat, av);
+      return;
+    }
+    decompose_bank(flat, av);
   }
 
   // Mixed-radix decomposition: map flat bank index into per-slot addr_vec values.
@@ -459,6 +475,25 @@ class LatencyThroughputTrace : public IFrontEnd, public Implementation {
     for (int i = static_cast<int>(m_bank_positions.size()) - 1; i >= 0; i--) {
       av[m_bank_positions[i]] = flat % m_bank_counts[i];
       flat /= m_bank_counts[i];
+    }
+  }
+
+  // Natural controller order follows the DRAM address-vector hierarchy instead of
+  // the frontend throughput-optimized order.  The highest address-vector bank
+  // position cycles slowest, and the lowest bank position before Row cycles fastest.
+  void decompose_bank_controller_order(int flat, AddrVec_t& av) {
+    std::vector<size_t> order(m_bank_positions.size());
+    for (size_t i = 0; i < order.size(); i++) {
+      order[i] = i;
+    }
+    std::sort(order.begin(), order.end(), [this](size_t lhs, size_t rhs) {
+      return m_bank_positions[lhs] < m_bank_positions[rhs];
+    });
+
+    for (int i = static_cast<int>(order.size()) - 1; i >= 0; i--) {
+      size_t bank_idx = order[i];
+      av[m_bank_positions[bank_idx]] = flat % m_bank_counts[bank_idx];
+      flat /= m_bank_counts[bank_idx];
     }
   }
 

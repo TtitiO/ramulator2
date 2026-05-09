@@ -150,6 +150,8 @@ def generate_header(cls):
         incremental_hooks = list(getattr(cls, "power_incremental_command_hooks", []))
         incremental_timing_map = dict(getattr(cls, "power_incremental_command_energy_timings", {}))
         incremental_energy_terms = dict(getattr(cls, "power_incremental_command_energy_terms", {}))
+        incremental_energy_scales = dict(getattr(cls, "power_incremental_command_energy_scales", {}))
+        incremental_event_energy_exprs = dict(getattr(cls, "power_incremental_command_event_energy_exprs", {}))
 
         def _sum_term_expr(terms, subtract_baseline=False):
             parts = []
@@ -199,8 +201,16 @@ def generate_header(cls):
                 current_expr = _sum_term_expr(
                     incremental_energy_terms[counted_name], subtract_baseline=True
                 )
+                scale_key = incremental_energy_scales.get(counted_name)
+                scale_expr = f" * {scale_key}" if scale_key else ""
+                event_energy_expr = incremental_event_energy_exprs.get(counted_name)
+                event_expr = (
+                    f" + rank_stats.incremental_command_counters[Command::{counted_name}] * ({event_energy_expr})"
+                    if event_energy_expr
+                    else ""
+                )
                 incremental_formulas.append(
-                    f"    double {counted_name.lower()}_incremental_cmd_energy = ({current_expr}) * rank_stats.incremental_command_counters[Command::{counted_name}] * timing_vals[Timing::{timing_name}] * tCK_ns / 1E3;"
+                    f"    double {counted_name.lower()}_incremental_cmd_energy = ({current_expr}) * rank_stats.incremental_command_counters[Command::{counted_name}] * timing_vals[Timing::{timing_name}]{scale_expr} * tCK_ns / 1E3{event_expr};"
                 )
             incremental_sum = " +\n        ".join(
                 f"{counted_name.lower()}_incremental_cmd_energy"
@@ -257,12 +267,12 @@ def generate_header(cls):
     stats.add("total_background_energy", total_background_energy_pJ);
     stats.add("total_cmd_energy", total_cmd_energy_pJ);
     stats.add("total_energy", total_energy_pJ);
-{incremental_stats_add}    
+{incremental_stats_add}
     for (auto& power_stat : power_stats) {{
       stats.add(fmt::format("total_background_energy_rank_{{}}", power_stat.rank_id), power_stat.background_active_energy_pJ + power_stat.background_idle_energy_pJ);
       stats.add(fmt::format("total_cmd_energy_rank_{{}}", power_stat.rank_id), power_stat.command_energy_pJ);
       stats.add(fmt::format("total_energy_rank_{{}}", power_stat.rank_id), power_stat.total_energy_pJ);
-{incremental_stats_rank_add}      
+{incremental_stats_rank_add}
       stats.add(fmt::format("background_active_energy_rank_{{}}", power_stat.rank_id), power_stat.background_active_energy_pJ);
       stats.add(fmt::format("background_idle_energy_rank_{{}}", power_stat.rank_id), power_stat.background_idle_energy_pJ);
       stats.add(fmt::format("active_cycles_rank_{{}}", power_stat.rank_id), power_stat.active_cycles);

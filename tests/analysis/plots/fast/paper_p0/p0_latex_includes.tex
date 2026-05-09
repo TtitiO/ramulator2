@@ -1,0 +1,23 @@
+% P0 Paper-Facing LaTeX Includes
+% Generated from LPDDR5-PIM Shared-MPU Validation Sweep (NOP=1 subset)
+%
+% IMPORTANT DISCLAIMERS:
+% - The 32-bank point uses the 32-bank diagnostic configuration.
+% - All values are simulator-internal diagnostics (non-silicon-calibrated).
+% - Workload: same-NOP synthetic 4096-request PIMCompute stream.
+% - Energy attribution mode: builtin_total (direct simulator accounting).
+%
+
+% === Figure: Throughput vs Active Banks ===
+\begin{figure}[t]
+\centering
+\includegraphics[width=0.48\textwidth]{figures/p0_shared_mpu_throughput_vs_active_banks.pdf}
+\caption{PIM throughput vs. active banks at NOP=1 (minimum inter-PIM gap). Lines show different banks-per-MPU configurations. When multiple banks share one MPU group, throughput degrades in the bank-limited regime ($\leq$8 banks). The 32-bank point uses the 32-bank diagnostic configuration and should not be mixed with lower-bank points as a same-total-bank scaling claim. At 16--32 active banks, banks/MPU=2 remains close to the dedicated-MPU diagnostic baseline while banks/MPU=4 retains a visible gap. The EDP/energy summary excludes unmodeled PIM compute-array energy. \textbf{Simulator-internal diagnostics (non-silicon-calibrated)} for a same-NOP synthetic 4096-request PIMCompute stream.}
+\label{fig:p0_throughput_vs_banks}
+\end{figure}
+
+% === Table: EDP and Energy Summary ===
+\input{tables/p0_nop1_edp_energy_summary.tex}
+
+% === Methodology Snippet ===
+% Total energy is computed directly by the simulator's built-in power model (energy\_attribution\_mode = builtin\_total). Comparisons between configurations with the same NOP value are quantitatively sound. All values are simulator-internal and non-silicon-calibrated; EDP/energy excludes unmodeled PIM compute-array energy. The 32-bank point uses the 32-bank diagnostic configuration.

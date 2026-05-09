@@ -42,7 +42,7 @@ def test_pim_mac_requires_act1_then_act2_before_timing_gate():
     assert ontime.ready is True
 
 
-def test_pim_mac_to_pim_mac_gap_respects_npim_mac_lat_for_launch_legality():
+def test_pim_mac_to_pim_mac_gap_respects_npim_mac_ii_for_launch_legality():
     dut = make_dut()
     a = dut.addr_vec(Rank=0, BankGroup=0, Bank=0, Row=7, Column=0)
 
@@ -54,8 +54,8 @@ def test_pim_mac_to_pim_mac_gap_respects_npim_mac_lat_for_launch_legality():
     # This is a device-level launch-timing check only. Controller tests own the
     # post-issue execution-overlap behavior because in-flight residency is not
     # visible through DeviceUnderTest probes.
-    early = dut.probe("PIM_MAC", a, clk=first_mac_clk + dut.timings["nPIM_MAC_LAT"] - 1)
-    ontime = dut.probe("PIM_MAC", a, clk=first_mac_clk + dut.timings["nPIM_MAC_LAT"])
+    early = dut.probe("PIM_MAC", a, clk=first_mac_clk + dut.timings["nPIM_MAC_II"] - 1)
+    ontime = dut.probe("PIM_MAC", a, clk=first_mac_clk + dut.timings["nPIM_MAC_II"])
 
     assert early.preq == "PIM_MAC"
     assert early.timing_OK is False
@@ -104,6 +104,18 @@ def test_pim_bcast_requires_hab_mode_first():
     after = dut.probe("PIM_BCAST", a, clk=1)
     assert after.preq == "PIM_BCAST"
     assert after.ready is True
+
+
+def test_lpddr5_pim_declares_rank_pim_bcast_to_pim_bcast_nbl_timing_constraint():
+    matches = [
+        constraint
+        for constraint in ramulator.dram.LPDDR5PIM.timing_constraints
+        if constraint.level == "Rank"
+        and constraint.preceding == ["PIM_BCAST"]
+        and constraint.following == ["PIM_BCAST"]
+        and constraint.latency == "nBL"
+    ]
+    assert len(matches) == 1
 
 
 def test_pim_mac_ab_requires_hab_pim_mode_first():

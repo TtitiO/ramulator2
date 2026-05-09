@@ -1,0 +1,361 @@
+#include <cstdint>
+#include <filesystem>
+#include <fmt/format.h>
+#include <fstream>
+#include <optional>
+#include <stdexcept>
+#include <string>
+#include <vector>
+
+#include <yaml-cpp/yaml.h>
+
+#include "ramulator/base/param.h"
+#include "ramulator/frontend/i_frontend.h"
+
+namespace Ramulator {
+
+namespace fs = std::filesystem;
+
+class LPDDR5PIMConcreteTrace : public IFrontEnd, public Implementation {
+  RAMULATOR_REGISTER_IMPLEMENTATION(IFrontEnd, LPDDR5PIMConcreteTrace, "LPDDR5PIMConcreteTrace")
+
+ private:
+  struct OpcodeRecord {
+    std::string opcode;
+    AddrVec_t addr_vec;
+    int request_type_id;
+    int command_id;
+    int repeat;
+  };
+
+  std::vector<OpcodeRecord> m_records;
+  std::optional<Request> m_retry_req;
+
+  std::string m_trace_path;
+  int m_pim_compute_request_type_id = -1;
+  int m_pim_load_all_request_type_id = -1;
+  int m_pim_compute_all_request_type_id = -1;
+  int m_cmd_sb = -1;
+  int m_cmd_hab = -1;
+  int m_cmd_hab_pim = -1;
+  int m_addr_vec_size = 0;
+  int64_t m_max_trace_bytes = 16 * 1024 * 1024;
+  int m_max_records = 1000000;
+  int m_max_repeat = 1000000;
+  int64_t m_max_expanded_records = 10000000;
+
+  size_t m_curr_record_idx = 0;
+  int m_curr_repeat_idx = 0;
+  int64_t m_inflight_requests = 0;
+
+  size_t s_records_loaded = 0;
+  size_t s_records_expanded = 0;
+  int64_t s_opcode_requests_sent = 0;
+  int64_t s_opcode_requests_completed = 0;
+  size_t s_sb_records = 0;
+  size_t s_hab_records = 0;
+  size_t s_hab_pim_records = 0;
+  size_t s_pim_bcast_records = 0;
+  size_t s_pim_mac_records = 0;
+  size_t s_pim_mac_ab_records = 0;
+
+ public:
+  void init() override {
+    RAMULATOR_PARSE_PARAM(m_clock_ratio, unsigned int, "clock_ratio").required();
+    RAMULATOR_PARSE_PARAM(m_trace_path, std::string, "path").required();
+    RAMULATOR_PARSE_PARAM(m_pim_compute_request_type_id, int, "pim_compute_request_type_id").required();
+    RAMULATOR_PARSE_PARAM(m_pim_load_all_request_type_id, int, "pim_load_all_request_type_id").required();
+    RAMULATOR_PARSE_PARAM(m_pim_compute_all_request_type_id, int, "pim_compute_all_request_type_id").required();
+    RAMULATOR_PARSE_PARAM(m_cmd_sb, int, "sb_command_id").required();
+    RAMULATOR_PARSE_PARAM(m_cmd_hab, int, "hab_command_id").required();
+    RAMULATOR_PARSE_PARAM(m_cmd_hab_pim, int, "hab_pim_command_id").required();
+    RAMULATOR_PARSE_PARAM(m_addr_vec_size, int, "addr_vec_size").required();
+    RAMULATOR_PARSE_PARAM(m_max_trace_bytes, int64_t, "max_trace_bytes").default_val(16777216);
+    RAMULATOR_PARSE_PARAM(m_max_records, int, "max_records").default_val(1000000);
+    RAMULATOR_PARSE_PARAM(m_max_repeat, int, "max_repeat").default_val(1000000);
+    RAMULATOR_PARSE_PARAM(m_max_expanded_records, int64_t, "max_expanded_records").default_val(10000000);
+
+    if (m_addr_vec_size <= 0) {
+      throw std::runtime_error("LPDDR5PIMConcreteTrace: addr_vec_size must be positive");
+    }
+    if (m_max_trace_bytes <= 0 || m_max_records <= 0 || m_max_repeat <= 0 || m_max_expanded_records <= 0) {
+      throw std::runtime_error("LPDDR5PIMConcreteTrace: max trace limits must be positive");
+    }
+    load_trace(m_trace_path);
+    validate_sequence();
+
+    m_stats.add("records_loaded", s_records_loaded);
+    m_stats.add("records_expanded", s_records_expanded);
+    m_stats.add("opcode_requests_sent", s_opcode_requests_sent);
+    m_stats.add("opcode_requests_completed", s_opcode_requests_completed);
+    m_stats.add("sb_records", s_sb_records);
+    m_stats.add("hab_records", s_hab_records);
+    m_stats.add("hab_pim_records", s_hab_pim_records);
+    m_stats.add("pim_bcast_records", s_pim_bcast_records);
+    m_stats.add("pim_mac_records", s_pim_mac_records);
+    m_stats.add("pim_mac_ab_records", s_pim_mac_ab_records);
+  }
+
+  int get_num_cores() override { return 1; }
+
+  void tick() override {
+    m_clk++;
+    if (m_retry_req) {
+      try_send_retry();
+      return;
+    }
+    if (m_curr_record_idx >= m_records.size()) {
+      return;
+    }
+    if (m_inflight_requests > 0) {
+      return;
+    }
+
+    const OpcodeRecord& record = m_records[m_curr_record_idx];
+    if (m_curr_repeat_idx >= record.repeat) {
+      m_curr_record_idx++;
+      m_curr_repeat_idx = 0;
+      return;
+    }
+
+    m_retry_req = make_request(record);
+    try_send_retry();
+  }
+
+  bool is_finished() override {
+    return m_curr_record_idx >= m_records.size() && !m_retry_req && m_inflight_requests == 0;
+  }
+
+ private:
+  void load_trace(const std::string& file_path_str) {
+    fs::path trace_path(file_path_str);
+    if (!fs::exists(trace_path)) {
+      throw std::runtime_error(fmt::format("LPDDR5PIMConcreteTrace: trace {} does not exist", file_path_str));
+    }
+    if (fs::file_size(trace_path) > static_cast<uint64_t>(m_max_trace_bytes)) {
+      throw std::runtime_error(fmt::format("LPDDR5PIMConcreteTrace: trace {} exceeds max_trace_bytes {}", file_path_str, m_max_trace_bytes));
+    }
+    std::ifstream trace_file(trace_path);
+    if (!trace_file.is_open()) {
+      throw std::runtime_error(fmt::format("LPDDR5PIMConcreteTrace: trace {} cannot be opened", file_path_str));
+    }
+
+    std::string line;
+    int line_num = 0;
+    while (std::getline(trace_file, line)) {
+      line_num++;
+      if (line.empty()) {
+        continue;
+      }
+      if (static_cast<int>(m_records.size()) >= m_max_records) {
+        throw std::runtime_error(fmt::format("LPDDR5PIMConcreteTrace: {} exceeds max_records {}", file_path_str, m_max_records));
+      }
+      YAML::Node node;
+      try {
+        node = YAML::Load(line);
+      } catch (const YAML::Exception& exc) {
+        throw std::runtime_error(fmt::format("LPDDR5PIMConcreteTrace: {} line {} parse error: {}", file_path_str, line_num, exc.what()));
+      }
+      m_records.push_back(parse_record(node, file_path_str, line_num));
+      s_records_loaded++;
+      s_records_expanded += m_records.back().repeat;
+      if (static_cast<int64_t>(s_records_expanded) > m_max_expanded_records) {
+        throw std::runtime_error(fmt::format("LPDDR5PIMConcreteTrace: {} exceeds max_expanded_records {}", file_path_str, m_max_expanded_records));
+      }
+    }
+  }
+
+  OpcodeRecord parse_record(const YAML::Node& node, const std::string& path, int line_num) {
+    require_string(node, "schema_version", path, line_num, "lpddr5-pim-opcode-v0.1");
+    require_present(node, "record_id", path, line_num);
+    const std::string opcode = require_string(node, "opcode", path, line_num);
+    const int repeat = require_int(node, "repeat", path, line_num);
+    if (repeat <= 0) {
+      throw std::runtime_error(fmt::format("LPDDR5PIMConcreteTrace: {} line {} repeat must be positive", path, line_num));
+    }
+    if (repeat > m_max_repeat) {
+      throw std::runtime_error(fmt::format("LPDDR5PIMConcreteTrace: {} line {} repeat exceeds max_repeat {}", path, line_num, m_max_repeat));
+    }
+    AddrVec_t addr_vec = require_addr_vec(node, path, line_num);
+    require_provenance(node, path, line_num);
+
+    int request_type_id = -1;
+    int command_id = -1;
+    if (opcode == "SB") {
+      command_id = m_cmd_sb;
+      s_sb_records++;
+    } else if (opcode == "HAB") {
+      command_id = m_cmd_hab;
+      s_hab_records++;
+    } else if (opcode == "HAB_PIM") {
+      command_id = m_cmd_hab_pim;
+      s_hab_pim_records++;
+    } else if (opcode == "PIM_BCAST") {
+      request_type_id = m_pim_load_all_request_type_id;
+      s_pim_bcast_records++;
+    } else if (opcode == "PIM_MAC") {
+      request_type_id = m_pim_compute_request_type_id;
+      s_pim_mac_records++;
+    } else if (opcode == "PIM_MAC_AB") {
+      request_type_id = m_pim_compute_all_request_type_id;
+      s_pim_mac_ab_records++;
+    } else {
+      throw std::runtime_error(fmt::format("LPDDR5PIMConcreteTrace: {} line {} unsupported opcode '{}'", path, line_num, opcode));
+    }
+    return OpcodeRecord{.opcode = opcode, .addr_vec = std::move(addr_vec), .request_type_id = request_type_id, .command_id = command_id, .repeat = repeat};
+  }
+
+  void validate_sequence() const {
+    enum class Mode { SB, HAB, HAB_PIM };
+    Mode mode = Mode::SB;
+    bool saw_bcast_since_hab = false;
+    for (size_t i = 0; i < m_records.size(); i++) {
+      const std::string& opcode = m_records[i].opcode;
+      if (opcode == "SB") {
+        mode = Mode::SB;
+        saw_bcast_since_hab = false;
+      } else if (opcode == "HAB") {
+        mode = Mode::HAB;
+        saw_bcast_since_hab = false;
+      } else if (opcode == "HAB_PIM") {
+        if (!saw_bcast_since_hab) {
+          throw std::runtime_error(fmt::format("LPDDR5PIMConcreteTrace: record {} HAB_PIM requires a preceding PIM_BCAST in HAB mode", i));
+        }
+        mode = Mode::HAB_PIM;
+      } else if (opcode == "PIM_BCAST") {
+        if (mode != Mode::HAB) {
+          throw std::runtime_error(fmt::format("LPDDR5PIMConcreteTrace: record {} PIM_BCAST requires HAB mode", i));
+        }
+        saw_bcast_since_hab = true;
+      } else if (opcode == "PIM_MAC_AB") {
+        if (mode != Mode::HAB_PIM || !saw_bcast_since_hab) {
+          throw std::runtime_error(fmt::format("LPDDR5PIMConcreteTrace: record {} PIM_MAC_AB requires HAB_PIM mode after PIM_BCAST", i));
+        }
+      } else if (opcode == "PIM_MAC") {
+        if (mode != Mode::SB) {
+          throw std::runtime_error(fmt::format("LPDDR5PIMConcreteTrace: record {} PIM_MAC requires SB mode", i));
+        }
+      }
+    }
+  }
+
+  Request make_request(const OpcodeRecord& record) {
+    Request req;
+    if (record.command_id >= 0) {
+      req = Request(record.addr_vec, Request::Cmd, record.command_id);
+    } else {
+      req = Request(record.addr_vec, record.request_type_id);
+    }
+    req.source_id = 0;
+    req.size_bytes = m_memory_system->get_tx_bytes();
+    req.addr = flatten_addr(record.addr_vec);
+    req.callback = [this](Request&) {
+      m_inflight_requests--;
+      s_opcode_requests_completed++;
+    };
+    return req;
+  }
+
+  void try_send_retry() {
+    if (!m_retry_req) {
+      return;
+    }
+    m_inflight_requests++;
+    bool accepted = false;
+    try {
+      accepted = m_memory_system->send(*m_retry_req);
+    } catch (...) {
+      m_inflight_requests--;
+      throw;
+    }
+    if (!accepted) {
+      m_inflight_requests--;
+      return;
+    }
+    m_retry_req.reset();
+    m_curr_repeat_idx++;
+    s_opcode_requests_sent++;
+  }
+
+  Addr_t flatten_addr(const AddrVec_t& av) const {
+    Addr_t result = 0;
+    for (int value : av) {
+      result = result * 4096 + static_cast<Addr_t>(value + 1);
+    }
+    return result;
+  }
+
+  static void require_present(const YAML::Node& node, const std::string& key, const std::string& path, int line_num) {
+    if (!node[key]) {
+      throw std::runtime_error(fmt::format("LPDDR5PIMConcreteTrace: {} line {} missing required field '{}'", path, line_num, key));
+    }
+  }
+
+  static std::string require_string(const YAML::Node& node, const std::string& key, const std::string& path, int line_num, const std::string& exact = "") {
+    require_present(node, key, path, line_num);
+    std::string value = node[key].as<std::string>();
+    if (!exact.empty() && value != exact) {
+      throw std::runtime_error(fmt::format("LPDDR5PIMConcreteTrace: {} line {} field '{}' must equal '{}'", path, line_num, key, exact));
+    }
+    return value;
+  }
+
+  static int require_int(const YAML::Node& node, const std::string& key, const std::string& path, int line_num) {
+    require_present(node, key, path, line_num);
+    return node[key].as<int>();
+  }
+
+  AddrVec_t require_addr_vec(const YAML::Node& node, const std::string& path, int line_num) const {
+    require_present(node, "addr_vec", path, line_num);
+    if (!node["addr_vec"].IsSequence()) {
+      throw std::runtime_error(fmt::format("LPDDR5PIMConcreteTrace: {} line {} addr_vec must be a sequence", path, line_num));
+    }
+    AddrVec_t addr_vec = node["addr_vec"].as<std::vector<int>>();
+    if (static_cast<int>(addr_vec.size()) != m_addr_vec_size) {
+      throw std::runtime_error(fmt::format("LPDDR5PIMConcreteTrace: {} line {} addr_vec size must equal addr_vec_size", path, line_num));
+    }
+    for (int value : addr_vec) {
+      if (value < 0) {
+        throw std::runtime_error(fmt::format("LPDDR5PIMConcreteTrace: {} line {} addr_vec entries must be non-negative", path, line_num));
+      }
+    }
+    return addr_vec;
+  }
+
+  static void require_provenance(const YAML::Node& node, const std::string& path, int line_num) {
+    require_present(node, "provenance", path, line_num);
+    YAML::Node provenance = node["provenance"];
+    if (!provenance.IsMap()) {
+      throw std::runtime_error(fmt::format("LPDDR5PIMConcreteTrace: {} line {} provenance must be a map", path, line_num));
+    }
+    require_present(provenance, "claim_boundary", path, line_num);
+    require_present(provenance, "non_claims", path, line_num);
+    require_sequence_contains(provenance["claim_boundary"], "native-lpddr5-pim-concrete-opcode-replay", "provenance.claim_boundary", path, line_num);
+    require_sequence_contains(provenance["claim_boundary"], "backend-specific-command-validation", "provenance.claim_boundary", path, line_num);
+    require_sequence_contains(provenance["claim_boundary"], "simulator-diagnostic", "provenance.claim_boundary", path, line_num);
+    require_sequence_contains(provenance["claim_boundary"], "non-silicon-calibrated", "provenance.claim_boundary", path, line_num);
+    require_sequence_contains(provenance["non_claims"], "not_semantic_workload_replay", "provenance.non_claims", path, line_num);
+    require_sequence_contains(provenance["non_claims"], "not_runtime_replay", "provenance.non_claims", path, line_num);
+    require_sequence_contains(provenance["non_claims"], "not_vllm_replay", "provenance.non_claims", path, line_num);
+    require_sequence_contains(provenance["non_claims"], "not_raw_attacc_schema", "provenance.non_claims", path, line_num);
+  }
+
+  static void require_sequence_contains(
+      const YAML::Node& node,
+      const std::string& expected,
+      const std::string& field,
+      const std::string& path,
+      int line_num) {
+    if (!node.IsSequence()) {
+      throw std::runtime_error(fmt::format("LPDDR5PIMConcreteTrace: {} line {} {} must be a sequence", path, line_num, field));
+    }
+    for (const YAML::Node& entry : node) {
+      if (entry.as<std::string>() == expected) {
+        return;
+      }
+    }
+    throw std::runtime_error(fmt::format("LPDDR5PIMConcreteTrace: {} line {} {} missing '{}'", path, line_num, field, expected));
+  }
+};
+
+}  // namespace Ramulator

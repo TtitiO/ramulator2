@@ -68,16 +68,37 @@ class CmdTraceRecorder : public IControllerPlugin, public Implementation {
   std::string m_path;
   bool m_binary = false;
   int m_level_count = 0;
+  int m_rank_level = -1;
+  int m_bank_group_level = -1;
+  int m_bank_level = -1;
+  int m_banks_per_rank = 1;
+  int m_banks_per_bank_group = 1;
   std::ofstream m_file;
 
   // ── Text mode ──────────────────────────────────────────────────────
 
   void write_text_header(const DRAMSpec& spec) {
+    if (spec.has_level("Rank")) {
+      m_rank_level = spec.get_level_id("Rank");
+    }
+    if (spec.has_level("BankGroup")) {
+      m_bank_group_level = spec.get_level_id("BankGroup");
+    }
+    if (spec.has_level("Bank")) {
+      m_bank_level = spec.get_level_id("Bank");
+      m_banks_per_bank_group = spec.organization.level_sizes[m_bank_level];
+      if (m_rank_level >= 0) {
+        m_banks_per_rank = 1;
+        for (int level = m_rank_level + 1; level <= m_bank_level; level++) {
+          m_banks_per_rank *= spec.organization.level_sizes[level];
+        }
+      }
+    }
     m_file << "clock,command";
     for (const auto& name : spec.level_names) {
       m_file << "," << name;
     }
-    m_file << ",type,source\n";
+    m_file << ",type,source,bank_id,mpu_group_id,pim_banks_per_mpu,global_ready,bank_ready,mpu_ready,issue_or_stall_reason\n";
   }
 
   void write_text_record(const Request& req) {
@@ -86,7 +107,23 @@ class CmdTraceRecorder : public IControllerPlugin, public Implementation {
     for (int i = 0; i < m_level_count; i++) {
       m_file << "," << req.addr_vec[i];
     }
-    m_file << "," << req.type_id << "," << req.source_id << "\n";
+    int bank_id = -1;
+    if (m_bank_level >= 0 && req.addr_vec[m_bank_level] >= 0) {
+      bank_id = req.addr_vec[m_bank_level];
+      if (m_bank_group_level >= 0 && req.addr_vec[m_bank_group_level] >= 0) {
+        bank_id = req.addr_vec[m_bank_group_level] * m_banks_per_bank_group + req.addr_vec[m_bank_level];
+      }
+      if (m_rank_level >= 0 && req.addr_vec[m_rank_level] >= 0) {
+        bank_id += req.addr_vec[m_rank_level] * m_banks_per_rank;
+      }
+    }
+    int pim_banks_per_mpu = m_ctrl->m_device.m_spec->pim_banks_per_mpu;
+    int mpu_group = (bank_id >= 0 && pim_banks_per_mpu > 0) ? bank_id / pim_banks_per_mpu : -1;
+    int is_pim_mac = cmd_names[req.command] == "PIM_MAC" ? 1 : 0;
+    m_file << "," << req.type_id << "," << req.source_id << "," << bank_id << "," << mpu_group << ","
+           << pim_banks_per_mpu << "," << is_pim_mac << "," << is_pim_mac << "," << is_pim_mac << ","
+           << (is_pim_mac ? "issued" : "not_pim_mac") << "\n";
+    m_file.flush();
   }
 
   // ── Binary mode ────────────────────────────────────────────────────

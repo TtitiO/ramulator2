@@ -1,3 +1,5 @@
+import csv
+
 import pytest
 
 import ramulator
@@ -7,13 +9,29 @@ import tests.controller_scheduling.harness as cs
 pytestmark = pytest.mark.controller_scheduling
 
 
-def make_dut(pim_blocks_per_bank: int = 1):
+def make_dut(
+    pim_blocks_per_bank: int = 1,
+    pim_banks_per_mpu: int = 2,
+    pim_mac_execution_model: str = "shared_mpu_serial",
+    pim_datatype: str = "int8",
+    pim_datatype_class: str | None = None,
+    pim_datatype_behavior_enabled: bool = False,
+    rank: int = 1,
+    controller_plugins=None,
+    **dram_kwargs,
+):
     dram = ramulator.dram.LPDDR5PIM(
         org_preset="LPDDR5_8Gb_x16",
         timing_preset="LPDDR5_6400",
-        rank=1,
+        rank=rank,
         pim_enabled=True,
         pim_blocks_per_bank=pim_blocks_per_bank,
+        pim_banks_per_mpu=pim_banks_per_mpu,
+        pim_mac_execution_model=pim_mac_execution_model,
+        pim_datatype=pim_datatype,
+        pim_datatype_class=pim_datatype_class,
+        pim_datatype_behavior_enabled=pim_datatype_behavior_enabled,
+        **dram_kwargs,
     )
     controller = ramulator.controller.LPDDR5PIM(
         scheduler=ramulator.scheduler.FRFCFS(),
@@ -21,9 +39,13 @@ def make_dut(pim_blocks_per_bank: int = 1):
         row_policy=ramulator.row_policy.Open(),
         addr_mapper=ramulator.addr_mapper.PassThroughAddrMapper(),
         dram=dram,
-        controller_plugins=[],
+        controller_plugins=controller_plugins or [],
     )
     return cs.ControllerUnderTest(controller)
+
+
+def make_experimental_dut(**kwargs):
+    return make_dut(pim_mac_execution_model="subbank_overlap_experimental", **kwargs)
 
 
 def run_until_pim_mac_count(dut: cs.ControllerUnderTest, count: int, max_ticks: int = 256):
@@ -62,8 +84,72 @@ def bank_coords(dut: cs.ControllerUnderTest, cmd) -> tuple[int, int]:
     )
 
 
+def rank_bank_coords(dut: cs.ControllerUnderTest, cmd) -> tuple[int, int, int]:
+    return (
+        level_value(dut, cmd.addr_vec, "Rank"),
+        level_value(dut, cmd.addr_vec, "BankGroup"),
+        level_value(dut, cmd.addr_vec, "Bank"),
+    )
+
+
 def per_bank_stats(stats: dict, prefix: str, bank_count: int = 4) -> list[int]:
     return [stats[f"{prefix}{bank_id}"] for bank_id in range(bank_count)]
+
+
+def pim_mac_bank_coords_from_trace(stats: dict) -> list[tuple[int, int]]:
+    traces = stats["evidence"]["pim_energy_observability"]["modeled"]["command_traces"]
+    rows = csv.DictReader(traces[0]["raw_text"].splitlines())
+    return [
+        (int(row["BankGroup"]), int(row["Bank"]))
+        for row in rows
+        if row["command"] == "PIM_MAC"
+    ]
+
+
+def assert_pim_latency_split_identity(stats: dict):
+    assert stats["pim_latency"] == stats["pim_response_latency"]
+    assert stats["pim_response_latency"] == stats["pim_launch_wait"] + stats["pim_service_latency"]
+    if stats["num_pim_reqs_served"] > 0:
+        assert stats["avg_pim_latency"] == pytest.approx(stats["avg_pim_response_latency"])
+        assert stats["avg_pim_response_latency"] == pytest.approx(
+            stats["avg_pim_launch_wait"] + stats["avg_pim_service_latency"]
+        )
+
+
+def test_latency_throughput_pim_bank_sequence_order_frontend_default_vs_controller(tmp_path):
+    from tests.analysis.runner import run_single
+
+    base_override = {
+        "num_pim_requests": 4,
+        "pim_distribution_mode": "bank_sequence",
+        "pim_same_bank": False,
+        "pim_bank_group_size": 4,
+        "pim_bank_sequence": [0, 1, 2, 3],
+        "pim_burst_length": 1,
+        "pim_dependency_count": 1,
+        "pim_row_start": 0,
+        "pim_row_count": 1,
+    }
+
+    default_stats = run_single(
+        "lpddr5_pim",
+        nop_counter=256,
+        num_probes=0,
+        warmup=0,
+        cfg_override=base_override,
+        observability_dir=tmp_path,
+    )
+    controller_stats = run_single(
+        "lpddr5_pim",
+        nop_counter=256,
+        num_probes=0,
+        warmup=0,
+        cfg_override={**base_override, "pim_bank_sequence_order": "controller"},
+        observability_dir=tmp_path,
+    )
+
+    assert pim_mac_bank_coords_from_trace(default_stats)[:4] == [(0, 0), (1, 0), (2, 0), (3, 0)]
+    assert pim_mac_bank_coords_from_trace(controller_stats)[:4] == [(0, 0), (0, 1), (0, 2), (0, 3)]
 
 
 def test_pimcompute_issues_act1_act2_pim_mac():
@@ -165,6 +251,129 @@ def test_omitted_pim_blocks_per_bank_matches_explicit_one():
     assert [c.command for c in history_default] == [c.command for c in history_one]
 
 
+def test_pim_datatype_labels_do_not_change_lpddr5_pim_scheduling_or_stats():
+    addr_specs = [
+        dict(Rank=0, BankGroup=0, Bank=0, Row=9, Column=0),
+        dict(Rank=0, BankGroup=0, Bank=0, Row=9, Column=32),
+    ]
+
+    dut_int8 = make_experimental_dut(pim_blocks_per_bank=2, pim_datatype="int8", pim_datatype_class="int8")
+    for addr_spec in addr_specs:
+        dut_int8.send_request("PIMCompute", dut_int8.addr_vec(**addr_spec))
+    history_int8 = dut_int8.run_until_idle(max_ticks=256)
+
+    dut_fp16 = make_experimental_dut(pim_blocks_per_bank=2, pim_datatype="fp16", pim_datatype_class="fp16")
+    for addr_spec in addr_specs:
+        dut_fp16.send_request("PIMCompute", dut_fp16.addr_vec(**addr_spec))
+    history_fp16 = dut_fp16.run_until_idle(max_ticks=256)
+
+    stats_int8 = dut_int8.stats()
+    stats_fp16 = dut_fp16.stats()
+    stat_names = [
+        "pim_capacity_stalls",
+        "pim_dependency_stalls",
+        "num_pim_reqs_served",
+        "pim_inflight_peak",
+    ]
+
+    assert [(cmd.command, cmd.clk) for cmd in history_int8] == [
+        (cmd.command, cmd.clk) for cmd in history_fp16
+    ]
+    assert {name: stats_int8[name] for name in stat_names} == {
+        name: stats_fp16[name] for name in stat_names
+    }
+
+
+def test_pim_datatype_behavior_uses_explicit_resource_fields_not_scales():
+    addr_specs = [
+        dict(Rank=0, BankGroup=0, Bank=0, Row=9, Column=0),
+        dict(Rank=0, BankGroup=0, Bank=0, Row=9, Column=32),
+    ]
+
+    dut_int8 = make_experimental_dut(
+        pim_blocks_per_bank=2,
+        pim_datatype="int8",
+        pim_datatype_class="int8",
+        pim_datatype_behavior_enabled=True,
+    )
+    for addr_spec in addr_specs:
+        dut_int8.send_request("PIMCompute", dut_int8.addr_vec(**addr_spec))
+    history_int8 = run_until_pim_mac_count(dut_int8, count=2)
+    run_until_pim_reqs_served(dut_int8, count=2, max_ticks=dut_int8.timings["nPIM_MAC_LAT"] + 4)
+
+    dut_fp16 = make_experimental_dut(
+        pim_blocks_per_bank=2,
+        pim_datatype="fp16",
+        pim_datatype_class="fp16",
+        pim_datatype_behavior_enabled=True,
+    )
+    for addr_spec in addr_specs:
+        dut_fp16.send_request("PIMCompute", dut_fp16.addr_vec(**addr_spec))
+    history_fp16 = run_until_pim_mac_count(dut_fp16, count=2, max_ticks=512)
+    run_until_pim_reqs_served(dut_fp16, count=2, max_ticks=dut_fp16.timings["nPIM_MAC_LAT"] + 4)
+
+    stats_int8 = dut_int8.stats()
+    stats_fp16 = dut_fp16.stats()
+
+    assert dut_int8.timings["nPIM_MAC_II"] == 4
+    assert dut_fp16.timings["nPIM_MAC_II"] == 4
+    assert dut_int8.timings["nPIM_MAC_LAT"] == 8
+    assert dut_fp16.timings["nPIM_MAC_LAT"] == 8
+    assert stats_int8["pim_lanes"] == 32
+    assert stats_fp16["pim_lanes"] == 16
+    assert stats_int8["pim_ops_per_block_issue"] == 64.0
+    assert stats_fp16["pim_ops_per_block_issue"] == 32.0
+    assert stats_int8["pim_ops_per_request"] == 64.0
+    assert stats_fp16["pim_ops_per_request"] == 32.0
+    assert stats_int8["pim_mac_issue_interval_cycles"] == 4
+    assert stats_fp16["pim_mac_issue_interval_cycles"] == 4
+    assert stats_int8["pim_mac_pipeline_latency_cycles"] == 8
+    assert stats_fp16["pim_mac_pipeline_latency_cycles"] == 8
+    assert stats_int8["pim_movement_cycles"] == 1
+    assert stats_fp16["pim_movement_cycles"] == 1
+    assert stats_int8["pim_completion_latency_cycles"] == 9
+    assert stats_fp16["pim_completion_latency_cycles"] == 9
+    assert stats_int8["pim_slots_per_request"] == 1
+    assert stats_fp16["pim_slots_per_request"] == 1
+    assert stats_int8["pim_capacity_stalls"] == stats_fp16["pim_capacity_stalls"]
+    assert [(cmd.command, cmd.clk) for cmd in history_int8] == [
+        (cmd.command, cmd.clk) for cmd in history_fp16
+    ]
+    dut_int8.assert_gap(2, 3, dut_int8.timings["nPIM_MAC_II"], history=history_int8)
+    dut_fp16.assert_gap(2, 3, dut_fp16.timings["nPIM_MAC_II"], history=history_fp16)
+
+
+def test_pim_datatype_legacy_scale_knobs_are_rejected():
+    with pytest.raises(ValueError, match="pim_mac_latency_scale is deprecated"):
+        make_dut(pim_datatype_behavior_enabled=True, pim_mac_latency_scale=2.0)
+
+    with pytest.raises(ValueError, match="pim_incremental_energy_scale is deprecated"):
+        make_dut(pim_datatype_behavior_enabled=True, pim_incremental_energy_scale=2.0)
+
+
+def test_invalid_pim_mac_execution_model_is_rejected():
+    with pytest.raises(ValueError, match="unknown pim_mac_execution_model"):
+        make_dut(pim_mac_execution_model="same_bank_overlap")
+
+
+def test_invalid_pim_banks_per_mpu_is_rejected():
+    with pytest.raises(ValueError, match="pim_banks_per_mpu must be positive"):
+        make_dut(pim_banks_per_mpu=0)
+
+    with pytest.raises(ValueError, match="pim_banks_per_mpu must be positive"):
+        make_dut(pim_banks_per_mpu=-1)
+
+
+def test_incompatible_pim_banks_per_mpu_is_rejected():
+    with pytest.raises(RuntimeError, match="banks per rank 16 is not divisible by pim_banks_per_mpu 3"):
+        make_dut(pim_banks_per_mpu=3)
+
+
+def test_pim_banks_per_mpu_larger_than_rank_scope_is_rejected():
+    with pytest.raises(RuntimeError, match="pim_banks_per_mpu 32 exceeds banks per rank 16"):
+        make_dut(rank=2, pim_banks_per_mpu=32)
+
+
 def test_pimcompute_completion_is_delayed_beyond_launch():
     dut = make_dut()
     a = dut.addr_vec(Rank=0, BankGroup=0, Bank=0, Row=9, Column=0)
@@ -182,7 +391,7 @@ def test_pimcompute_completion_is_delayed_beyond_launch():
 
 
 def test_same_bank_dependent_pim_launches_stall_on_dependency_even_with_two_slots():
-    dut = make_dut(pim_blocks_per_bank=2)
+    dut = make_experimental_dut(pim_blocks_per_bank=2)
     a = dut.addr_vec(Rank=0, BankGroup=0, Bank=0, Row=9, Column=0)
 
     dut.send_request("PIMCompute", a)
@@ -201,8 +410,32 @@ def test_same_bank_dependent_pim_launches_stall_on_dependency_even_with_two_slot
     assert stats["pim_inflight_peak"] == 1
 
 
-def test_same_bank_independent_pim_launches_can_overlap_with_two_slots():
+def test_default_same_bank_independent_pim_launches_serialize_with_two_slots():
     dut = make_dut(pim_blocks_per_bank=2)
+    a0 = dut.addr_vec(Rank=0, BankGroup=0, Bank=0, Row=9, Column=0)
+    a1 = dut.addr_vec(Rank=0, BankGroup=0, Bank=0, Row=9, Column=32)
+
+    dut.send_request("PIMCompute", a0)
+    dut.send_request("PIMCompute", a1)
+
+    history = run_until_pim_mac_count(dut, count=2)
+    run_until_pim_reqs_served(dut, count=2, max_ticks=dut.timings["nPIM_MAC_LAT"] + 2)
+
+    stats = dut.stats()
+
+    dut.assert_commands(["ACT1", "ACT2", "PIM_MAC", "PIM_MAC"], history=history)
+    dut.assert_gap(2, 3, dut.timings["nPIM_MAC_LAT"] + 1, history=history)
+    assert stats["num_pim_reqs_served"] == 2
+    assert stats["pim_dependency_stalls"] == 0
+    assert stats["pim_mpu_group_stalls"] == 0
+    assert stats["num_bank_timing_blocked_cycles"] > 0
+    assert stats["pim_capacity_stalls"] == 0
+    assert stats["pim_inflight_peak"] == 1
+    assert stats["pim_mac_execution_model"] == 0
+
+
+def test_experimental_same_bank_independent_pim_launches_can_overlap_with_two_slots():
+    dut = make_experimental_dut(pim_blocks_per_bank=2)
     a0 = dut.addr_vec(Rank=0, BankGroup=0, Bank=0, Row=9, Column=0)
     a1 = dut.addr_vec(Rank=0, BankGroup=0, Bank=0, Row=9, Column=32)
 
@@ -218,8 +451,10 @@ def test_same_bank_independent_pim_launches_can_overlap_with_two_slots():
     dut.assert_gap(2, 3, dut.timings["nPIM_MAC_LAT"], history=history)
     assert stats["num_pim_reqs_served"] == 2
     assert stats["pim_dependency_stalls"] == 0
+    assert stats["pim_mpu_group_stalls"] == 0
     assert stats["pim_capacity_stalls"] == 0
     assert stats["pim_inflight_peak"] == 2
+    assert stats["pim_mac_execution_model"] == 1
 
 
 def test_same_bank_independent_pim_launches_serialize_when_bank_has_one_slot():
@@ -239,12 +474,208 @@ def test_same_bank_independent_pim_launches_serialize_when_bank_has_one_slot():
     dut.assert_gap(2, 3, dut.timings["nPIM_MAC_LAT"] + 1, history=history)
     assert stats["num_pim_reqs_served"] == 2
     assert stats["pim_dependency_stalls"] == 0
-    assert stats["pim_capacity_stalls"] > 0
+    assert stats["pim_mpu_group_stalls"] == 0
+    assert stats["num_bank_timing_blocked_cycles"] > 0
+    assert stats["pim_capacity_stalls"] == 0
     assert stats["pim_inflight_peak"] == 1
 
 
-def test_multi_bank_same_dependency_id_scales_without_cross_bank_dependency_stalls():
-    dut = make_dut(pim_blocks_per_bank=1)
+def test_shared_mpu_serial_same_mpu_paired_banks_serialize_by_default():
+    dut = make_dut(pim_blocks_per_bank=1, pim_banks_per_mpu=2)
+    bank0 = dut.addr_vec(Rank=0, BankGroup=0, Bank=0, Row=9, Column=0)
+    bank1 = dut.addr_vec(Rank=0, BankGroup=0, Bank=1, Row=9, Column=0)
+
+    dut.send_request("PIMCompute", bank0)
+    dut.send_request("PIMCompute", bank1)
+
+    history = run_until_pim_mac_count(dut, count=2)
+    run_until_pim_reqs_served(dut, count=2, max_ticks=dut.timings["nPIM_MAC_LAT"] + 8)
+
+    pim_cmds = [cmd for cmd in history if cmd.command == "PIM_MAC"]
+    stats = dut.stats()
+
+    assert len(pim_cmds) == 2
+    assert [bank_coords(dut, cmd) for cmd in pim_cmds] == [(0, 0), (0, 1)]
+    dut.assert_gap(0, 1, dut.timings["nPIM_MAC_LAT"] + 1, history=pim_cmds)
+    assert stats["num_pim_reqs_served"] == 2
+    assert stats["pim_dependency_stalls"] == 0
+    assert stats["pim_mpu_group_stalls"] > 0
+    assert stats["pim_capacity_stalls"] == 0
+    assert stats["pim_inflight_peak"] == 1
+    assert stats["pim_banks_per_mpu"] == 2
+    assert stats["pim_mpu_group_count"] == 8
+    assert stats["total_banks"] == 16
+    assert stats["effective_mpu_groups"] == 8
+    assert stats["num_mpu_group_busy_blocked_cycles"] > 0
+    assert_pim_latency_split_identity(stats)
+    assert stats["pim_service_latency"] == 2 * stats["pim_completion_latency_cycles"]
+    assert stats["pim_launch_wait"] > 0
+
+
+def test_shared_mpu_serial_different_mpu_groups_can_overlap():
+    dut = make_dut(pim_blocks_per_bank=1, pim_banks_per_mpu=2)
+    bank0 = dut.addr_vec(Rank=0, BankGroup=0, Bank=0, Row=9, Column=0)
+    bank2 = dut.addr_vec(Rank=0, BankGroup=0, Bank=2, Row=9, Column=0)
+
+    dut.send_request("PIMCompute", bank0)
+    dut.send_request("PIMCompute", bank2)
+
+    history = run_until_pim_mac_count(dut, count=2)
+    run_until_pim_reqs_served(dut, count=2, max_ticks=dut.timings["nPIM_MAC_LAT"] + 8)
+
+    pim_cmds = [cmd for cmd in history if cmd.command == "PIM_MAC"]
+    stats = dut.stats()
+
+    assert len(pim_cmds) == 2
+    assert [bank_coords(dut, cmd) for cmd in pim_cmds] == [(0, 0), (0, 2)]
+    dut.assert_gap(0, 1, 4, history=pim_cmds)
+    assert stats["num_pim_reqs_served"] == 2
+    assert stats["pim_dependency_stalls"] == 0
+    assert stats["pim_mpu_group_stalls"] == 0
+    assert stats["pim_capacity_stalls"] == 0
+    assert stats["pim_inflight_peak"] == 1
+    assert stats["pim_simultaneous_active_banks_peak"] == 2
+
+
+def test_shared_mpu_serial_one_bank_per_mpu_allows_cross_bank_overlap():
+    dut = make_dut(pim_blocks_per_bank=1, pim_banks_per_mpu=1)
+    bank0 = dut.addr_vec(Rank=0, BankGroup=0, Bank=0, Row=9, Column=0)
+    bank1 = dut.addr_vec(Rank=0, BankGroup=0, Bank=1, Row=9, Column=0)
+
+    dut.send_request("PIMCompute", bank0)
+    dut.send_request("PIMCompute", bank1)
+
+    history = run_until_pim_mac_count(dut, count=2)
+    run_until_pim_reqs_served(dut, count=2, max_ticks=dut.timings["nPIM_MAC_LAT"] + 8)
+
+    pim_cmds = [cmd for cmd in history if cmd.command == "PIM_MAC"]
+    stats = dut.stats()
+
+    assert len(pim_cmds) == 2
+    assert [bank_coords(dut, cmd) for cmd in pim_cmds] == [(0, 0), (0, 1)]
+    dut.assert_gap(0, 1, 4, history=pim_cmds)
+    assert stats["num_pim_reqs_served"] == 2
+    assert stats["pim_dependency_stalls"] == 0
+    assert stats["pim_mpu_group_stalls"] == 0
+    assert stats["pim_capacity_stalls"] == 0
+    assert stats["pim_inflight_peak"] == 1
+    assert stats["pim_simultaneous_active_banks_peak"] == 2
+    assert stats["pim_banks_per_mpu"] == 1
+    assert stats["pim_mpu_group_count"] == 16
+    assert stats["total_banks"] == 16
+    assert stats["effective_mpu_groups"] == 16
+    assert_pim_latency_split_identity(stats)
+    assert stats["pim_service_latency"] == 2 * stats["pim_completion_latency_cycles"]
+
+
+def test_shared_mpu_serial_all_rank_banks_share_one_mpu_serializes_cross_bankgroup():
+    dut = make_dut(pim_blocks_per_bank=1, pim_banks_per_mpu=16)
+    first_bank = dut.addr_vec(Rank=0, BankGroup=0, Bank=0, Row=9, Column=0)
+    last_bank = dut.addr_vec(Rank=0, BankGroup=3, Bank=3, Row=9, Column=0)
+
+    dut.send_request("PIMCompute", first_bank)
+    dut.send_request("PIMCompute", last_bank)
+
+    history = run_until_pim_mac_count(dut, count=2)
+    run_until_pim_reqs_served(dut, count=2, max_ticks=dut.timings["nPIM_MAC_LAT"] + 8)
+
+    pim_cmds = [cmd for cmd in history if cmd.command == "PIM_MAC"]
+    stats = dut.stats()
+
+    assert len(pim_cmds) == 2
+    assert [bank_coords(dut, cmd) for cmd in pim_cmds] == [(0, 0), (3, 3)]
+    dut.assert_gap(0, 1, dut.timings["nPIM_MAC_LAT"] + 1, history=pim_cmds)
+    assert stats["num_pim_reqs_served"] == 2
+    assert stats["pim_dependency_stalls"] == 0
+    assert stats["pim_mpu_group_stalls"] > 0
+    assert stats["pim_capacity_stalls"] == 0
+    assert stats["pim_inflight_peak"] == 1
+    assert stats["pim_banks_per_mpu"] == 16
+    assert stats["pim_mpu_group_count"] == 1
+    assert stats["effective_mpu_groups"] == 1
+
+
+def test_shared_mpu_serial_four_bank_grouping_aligns_with_bankgroup_boundary():
+    dut = make_dut(pim_blocks_per_bank=1, pim_banks_per_mpu=4)
+    bank0 = dut.addr_vec(Rank=0, BankGroup=0, Bank=0, Row=9, Column=0)
+    next_bankgroup_bank0 = dut.addr_vec(Rank=0, BankGroup=1, Bank=0, Row=9, Column=0)
+
+    dut.send_request("PIMCompute", bank0)
+    dut.send_request("PIMCompute", next_bankgroup_bank0)
+
+    history = run_until_pim_mac_count(dut, count=2)
+    run_until_pim_reqs_served(dut, count=2, max_ticks=dut.timings["nPIM_MAC_LAT"] + 8)
+
+    pim_cmds = [cmd for cmd in history if cmd.command == "PIM_MAC"]
+    stats = dut.stats()
+
+    assert len(pim_cmds) == 2
+    assert [bank_coords(dut, cmd) for cmd in pim_cmds] == [(0, 0), (1, 0)]
+    dut.assert_gap(0, 1, 4, history=pim_cmds)
+    assert stats["num_pim_reqs_served"] == 2
+    assert stats["pim_dependency_stalls"] == 0
+    assert stats["pim_capacity_stalls"] == 0
+    assert stats["pim_inflight_peak"] == 1
+    assert stats["pim_banks_per_mpu"] == 4
+    assert stats["pim_mpu_group_count"] == 4
+    assert stats["pim_simultaneous_active_banks_peak"] == 2
+
+
+def test_shared_mpu_serial_groups_do_not_cross_rank_boundary():
+    dut = make_dut(rank=2, pim_blocks_per_bank=1, pim_banks_per_mpu=4)
+    rank0_bank0 = dut.addr_vec(Rank=0, BankGroup=0, Bank=0, Row=9, Column=0)
+    rank1_bank0 = dut.addr_vec(Rank=1, BankGroup=0, Bank=0, Row=9, Column=0)
+
+    dut.send_request("PIMCompute", rank0_bank0)
+    dut.send_request("PIMCompute", rank1_bank0)
+
+    history = run_until_pim_mac_count(dut, count=2)
+    run_until_pim_reqs_served(dut, count=2, max_ticks=dut.timings["nPIM_MAC_LAT"] + 8)
+
+    pim_cmds = [cmd for cmd in history if cmd.command == "PIM_MAC"]
+    stats = dut.stats()
+
+    assert len(pim_cmds) == 2
+    assert [rank_bank_coords(dut, cmd) for cmd in pim_cmds] == [(0, 0, 0), (1, 0, 0)]
+    dut.assert_gap(0, 1, 1, history=pim_cmds)
+    assert stats["num_pim_reqs_served"] == 2
+    assert stats["pim_dependency_stalls"] == 0
+    assert stats["pim_capacity_stalls"] == 0
+    assert stats["pim_inflight_peak"] == 1
+    assert stats["pim_banks_per_mpu"] == 4
+    assert stats["pim_mpu_group_count"] == 8
+    assert stats["pim_simultaneous_active_banks_peak"] == 2
+
+
+def test_cmd_trace_recorder_reports_rank_aware_pim_mpu_groups(tmp_path):
+    trace_prefix = tmp_path / "pim_trace.csv"
+    dut = make_dut(
+        rank=2,
+        pim_blocks_per_bank=1,
+        pim_banks_per_mpu=4,
+        controller_plugins=[ramulator.controller_plugin.CmdTraceRecorder(path=str(trace_prefix))],
+    )
+    rank0_bank0 = dut.addr_vec(Rank=0, BankGroup=0, Bank=0, Row=9, Column=0)
+    rank1_bank0 = dut.addr_vec(Rank=1, BankGroup=0, Bank=0, Row=9, Column=0)
+
+    dut.send_request("PIMCompute", rank0_bank0)
+    dut.send_request("PIMCompute", rank1_bank0)
+    run_until_pim_mac_count(dut, count=2)
+
+    trace_path = tmp_path / "pim_trace.csv.ch0"
+    with trace_path.open(newline="") as handle:
+        rows = [row for row in csv.DictReader(handle) if row["command"] == "PIM_MAC"]
+
+    assert len(rows) == 2
+    assert [int(row["Rank"]) for row in rows] == [0, 1]
+    assert [int(row["bank_id"]) for row in rows] == [0, 16]
+    assert [int(row["mpu_group_id"]) for row in rows] == [0, 4]
+    assert [int(row["pim_banks_per_mpu"]) for row in rows] == [4, 4]
+    assert [row["issue_or_stall_reason"] for row in rows] == ["issued", "issued"]
+
+
+def test_experimental_same_mpu_paired_banks_can_overlap_when_slots_permit():
+    dut = make_experimental_dut(pim_blocks_per_bank=1, pim_banks_per_mpu=2)
     bank0 = dut.addr_vec(Rank=0, BankGroup=0, Bank=0, Row=9, Column=0)
     bank1 = dut.addr_vec(Rank=0, BankGroup=0, Bank=1, Row=9, Column=0)
 
@@ -264,10 +695,12 @@ def test_multi_bank_same_dependency_id_scales_without_cross_bank_dependency_stal
     assert stats["pim_dependency_stalls"] == 0
     assert stats["pim_capacity_stalls"] == 0
     assert stats["pim_inflight_peak"] == 1
+    assert stats["pim_simultaneous_active_banks_peak"] == 2
+    assert stats["pim_mac_execution_model"] == 1
 
 
 def test_bounded_multi_bank_round_robin_keeps_one_inflight_slot_per_bank():
-    dut = make_dut(pim_blocks_per_bank=2)
+    dut = make_experimental_dut(pim_blocks_per_bank=2)
     addrs = [
         dut.addr_vec(Rank=0, BankGroup=0, Bank=bank, Row=9, Column=0)
         for bank in range(4)
@@ -295,7 +728,7 @@ def test_bounded_multi_bank_round_robin_keeps_one_inflight_slot_per_bank():
 
 
 def test_cross_bank_refpb_waits_only_for_target_bank_while_other_bank_remains_inflight():
-    dut = make_dut(pim_blocks_per_bank=1)
+    dut = make_experimental_dut(pim_blocks_per_bank=1)
     bank0 = dut.addr_vec(Rank=0, BankGroup=0, Bank=0, Row=9, Column=0)
     bank1 = dut.addr_vec(Rank=0, BankGroup=0, Bank=1, Row=9, Column=0)
     refresh_bank0 = dut.addr_vec(Rank=0, BankGroup=0, Bank=0, Row=dut.ALL, Column=0)
@@ -358,6 +791,9 @@ def test_all_bank_load_then_execute_requires_mode_and_load_ordering():
     assert stats["pim_inflight_peak"] == 16
     assert per_bank_stats(stats, "pim_launches_bank_") == [1, 1, 1, 1]
     assert per_bank_stats(stats, "pim_inflight_peak_bank_") == [1, 1, 1, 1]
+    assert_pim_latency_split_identity(stats)
+    assert stats["pim_service_latency"] == stats["pim_completion_latency_cycles"]
+    assert stats["pim_launch_wait"] > 0
 
 
 def test_all_bank_execute_stalls_without_load():

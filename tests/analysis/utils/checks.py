@@ -164,10 +164,20 @@ def check_pim_latency_throughput(curves):
     num_pim_reqs_served = curve_100["num_pim_reqs_served"][max_idx]
     analytical_energy_estimate_pJ = curve_100["analytical_energy_estimate_pJ"][max_idx]
     analytical_energy_per_pim_request_pJ = curve_100["analytical_energy_per_pim_request_pJ"][max_idx]
+    simulated_pim_gops = curve_100["simulated_pim_gops"][max_idx]
+    simulated_pim_display_value = curve_100["simulated_pim_display_value"][max_idx]
+    simulated_pim_display_unit = curve_100["simulated_pim_display_unit"][max_idx]
+    simulated_pim_display_label = curve_100["simulated_pim_display_label"][max_idx]
+    pim_datatype = curve_100["pim_datatype"][max_idx]
+    pim_datatype_class = curve_100["pim_datatype_class"][max_idx]
+    pim_datatype_kind = curve_100["pim_datatype_kind"][max_idx]
+    pim_elements_per_request = curve_100["pim_elements_per_request"][max_idx]
+    pim_ops_per_request = curve_100["pim_ops_per_request"][max_idx]
     total_command_count = curve_100["total_command_count"][max_idx]
 
     assert measured_latency_ns > 0
     assert measured_throughput > 0
+    assert simulated_pim_gops > 0
     assert num_pim_reqs_served > 0
 
     return {
@@ -180,6 +190,15 @@ def check_pim_latency_throughput(curves):
         "pim_inflight_peak": inflight_peak,
         "analytical_energy_estimate_pJ": analytical_energy_estimate_pJ,
         "analytical_energy_per_pim_request_pJ": analytical_energy_per_pim_request_pJ,
+        "simulated_pim_gops": simulated_pim_gops,
+        "simulated_pim_display_value": simulated_pim_display_value,
+        "simulated_pim_display_unit": simulated_pim_display_unit,
+        "simulated_pim_display_label": simulated_pim_display_label,
+        "pim_datatype": pim_datatype,
+        "pim_datatype_class": pim_datatype_class,
+        "pim_datatype_kind": pim_datatype_kind,
+        "pim_elements_per_request": pim_elements_per_request,
+        "pim_ops_per_request": pim_ops_per_request,
         "total_command_count": total_command_count,
         "nop": curve_100["nops"][max_idx],
     }
@@ -246,8 +265,34 @@ def curves_to_nop_dict(curves, read_ratio=100):
             "all_bank_measured_throughput": curve.get("pim_all_bank_throughput", [0.0] * len(curve["nops"]))[i],
             "pim_dependency_stalls": curve["pim_dependency_stalls"][i],
             "pim_capacity_stalls": curve["pim_capacity_stalls"][i],
+            "pim_mpu_group_stalls": curve.get("pim_mpu_group_stalls", [0] * len(curve["nops"]))[i],
+            "effective_mpu_groups": curve.get("effective_mpu_groups", [0] * len(curve["nops"]))[i],
+            "total_banks": curve.get("total_banks", [0] * len(curve["nops"]))[i],
+            "total_energy_pJ": curve.get("total_energy_pJ", [0.0] * len(curve["nops"]))[i],
+            "full_system_edp_pJ_ns": curve.get("full_system_edp_pJ_ns", [0.0] * len(curve["nops"]))[i],
+            "energy_total_pJ": curve.get("energy_total_pJ", [0.0] * len(curve["nops"]))[i],
+            "energy_attribution_sum_pJ": curve.get("energy_attribution_sum_pJ", [0.0] * len(curve["nops"]))[i],
+            "average_power_mW": curve.get("average_power_mW", [0.0] * len(curve["nops"]))[i],
+            "total_simulation_time_ns": curve.get("total_simulation_time_ns", [0.0] * len(curve["nops"]))[i],
+            "total_completion_time_ns": curve.get("total_completion_time_ns", [0.0] * len(curve["nops"]))[i],
+            "runtime_full_system_edp_pJ_ns": curve.get("runtime_full_system_edp_pJ_ns", [0.0] * len(curve["nops"]))[i],
+            "legacy_full_system_edp_pJ_ns": curve.get("legacy_full_system_edp_pJ_ns", [0.0] * len(curve["nops"]))[i],
+            "latency_full_system_edp_pJ_ns": curve.get("latency_full_system_edp_pJ_ns", [0.0] * len(curve["nops"]))[i],
+            "throughput_edp_pJ_ns": curve.get("throughput_edp_pJ_ns", [0.0] * len(curve["nops"]))[i],
+            "global_issue_stall_per_request": curve.get("global_issue_stall_per_request", [0.0] * len(curve["nops"]))[i],
+            "mpu_group_busy_stall_per_request": curve.get("mpu_group_busy_stall_per_request", [0.0] * len(curve["nops"]))[i],
+            "bank_timing_stall_per_request": curve.get("bank_timing_stall_per_request", [0.0] * len(curve["nops"]))[i],
             "pim_inflight_peak": curve["pim_inflight_peak"][i],
             "num_pim_reqs_served": curve["num_pim_reqs_served"][i],
+            "simulated_pim_gops": curve.get("simulated_pim_gops", [0.0] * len(curve["nops"]))[i],
+            "simulated_pim_display_value": curve.get("simulated_pim_display_value", [0.0] * len(curve["nops"]))[i],
+            "simulated_pim_display_unit": curve.get("simulated_pim_display_unit", ["GOPS"] * len(curve["nops"]))[i],
+            "simulated_pim_display_label": curve.get("simulated_pim_display_label", ["simulated PIM arithmetic throughput (GOPS)"] * len(curve["nops"]))[i],
+            "pim_datatype": curve.get("pim_datatype", ["unknown"] * len(curve["nops"]))[i],
+            "pim_datatype_class": curve.get("pim_datatype_class", ["unknown"] * len(curve["nops"]))[i],
+            "pim_datatype_kind": curve.get("pim_datatype_kind", ["unknown"] * len(curve["nops"]))[i],
+            "pim_elements_per_request": curve.get("pim_elements_per_request", [0] * len(curve["nops"]))[i],
+            "pim_ops_per_request": curve.get("pim_ops_per_request", [0.0] * len(curve["nops"]))[i],
             "num_pim_ab_reqs_served": curve.get("num_pim_ab_reqs_served", [0] * len(curve["nops"]))[i],
             "pim_ab_inflight_peak": curve.get("pim_ab_inflight_peak", [0] * len(curve["nops"]))[i],
             "pim_mode_stalls": curve.get("pim_mode_stalls", [0] * len(curve["nops"]))[i],
@@ -269,6 +314,7 @@ def compare_at_same_nop(dep_point, ind_point):
         "throughput_delta": ind_point["measured_throughput"] - dep_point["measured_throughput"],
         "dependency_stall_delta": ind_point["pim_dependency_stalls"] - dep_point["pim_dependency_stalls"],
         "capacity_stall_delta": ind_point["pim_capacity_stalls"] - dep_point["pim_capacity_stalls"],
+        "mpu_group_stall_delta": ind_point.get("pim_mpu_group_stalls", 0) - dep_point.get("pim_mpu_group_stalls", 0),
         "inflight_peak_delta": ind_point["pim_inflight_peak"] - dep_point["pim_inflight_peak"],
         "served_delta": ind_point["num_pim_reqs_served"] - dep_point["num_pim_reqs_served"],
     }
@@ -306,6 +352,10 @@ def build_pim_energy_evidence(stats, std_name):
             f"modeled pim requests served: {controller_stats.get('num_pim_reqs_served', 0)}",
             f"derived analytical energy estimate (pJ): {derived['analytical_energy_estimate_pJ']:.3f}",
             f"derived analytical energy per pim request (pJ): {derived['analytical_energy_per_pim_request_pJ']:.6f}",
+            f"derived simulated pim arithmetic throughput ({derived['simulated_pim_display_unit']}): {derived['simulated_pim_display_value']:.6f}",
+            f"derived pim datatype: {derived['pim_datatype']} ({derived['pim_datatype_kind']})",
+            f"derived pim elements per request: {derived['pim_elements_per_request']}",
+            f"derived pim arithmetic ops per request: {derived['pim_ops_per_request']:.6f} (MAC=2 ops/element)",
             f"derived trace count matches counter total: {derived['trace_count_matches_counter_total']}",
             f"derived trace command counts match counter: {derived['trace_command_counts_match_counter']}",
             f"assumed parameter units: {assumed['parameter_units']}",
@@ -314,7 +364,12 @@ def build_pim_energy_evidence(stats, std_name):
     return evidence
 
 
-def write_pim_energy_summary(evidence, summary_path, json_path=None, tuple_description=None):
+def write_pim_energy_summary(
+    evidence,
+    summary_path,
+    json_path=None,
+    tuple_description=None,
+):
     summary_path = Path(summary_path)
     summary_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -327,14 +382,11 @@ def write_pim_energy_summary(evidence, summary_path, json_path=None, tuple_descr
         "- Workload class: Decode/GEMV-style microbenchmark",
         f"- Tuple: {tuple_description}",
         "- Baseline datatype: int8 (modeled baseline)",
-        "- Assumed capability: fp16 (assumed contrast only)",
         "- Framing: Bounded multi-bank distribution (frontend-shaped, not full parallel issue claim)",
         "- Energy method: Trace-driven analytical estimate from observed commands and runtime",
-        "",
-        "## modeled",
-        "",
-        "### command count",
     ]
+
+    lines.extend(["", "## modeled", "", "### command count"])
     for command, count in evidence["modeled"].get("command_counts", {}).items():
         lines.append(f"- {command}: {count}")
 

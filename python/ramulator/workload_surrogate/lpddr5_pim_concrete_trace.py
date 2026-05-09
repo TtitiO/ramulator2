@@ -1,0 +1,145 @@
+"""Native LPDDR5-PIM concrete opcode trace helpers.
+
+This module is intentionally separate from ``structured_trace.py``.  The
+structured trace surface preserves semantic workload-surrogate records, while
+this surface is backend-specific command replay for LPDDR5-PIM validation.
+"""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+
+CONCRETE_SCHEMA_VERSION = "lpddr5-pim-opcode-v0.1"
+CONCRETE_GENERATOR_VERSION = "lpddr5-pim-opcode-generator-v0.1"
+CONCRETE_OPCODES = {"SB", "HAB", "HAB_PIM", "PIM_BCAST", "PIM_MAC", "PIM_MAC_AB"}
+MODE_OPCODES = {"SB", "HAB", "HAB_PIM"}
+REQUEST_OPCODES = {"PIM_BCAST", "PIM_MAC", "PIM_MAC_AB"}
+MAX_REPEAT = 1_000_000
+MAX_EXPANDED_RECORDS = 100_000_000
+FORBIDDEN_RAW_ATTACC_OPCODES = {
+    "PIM_WR_GB",
+    "PIM_MV_BA",
+    "PIM_MV_BF",
+    "PIM_SFM",
+    "PIM_SET_CONFIG",
+    "PIM_SET",
+    "PIM_ACT_AB",
+}
+REQUIRED_BOUNDARY_CLAIMS = [
+    "native-lpddr5-pim-concrete-opcode-replay",
+    "backend-specific-command-validation",
+    "simulator-diagnostic",
+    "non-silicon-calibrated",
+]
+REQUIRED_NON_CLAIMS = [
+    "not_semantic_workload_replay",
+    "not_runtime_replay",
+    "not_vllm_replay",
+    "not_raw_attacc_schema",
+]
+
+
+def stable_json_dumps(data: object) -> str:
+    return json.dumps(data, sort_keys=True, separators=(",", ":"))
+
+
+def stable_json_pretty(data: object) -> str:
+    return json.dumps(data, indent=2, sort_keys=True) + "\n"
+
+
+def concrete_provenance(*, source_kind: str = "generated", manifest_name: str = "lpddr5_pim_concrete_minimal") -> dict:
+    return {
+        "source_kind": source_kind,
+        "manifest": manifest_name,
+        "generator_version": CONCRETE_GENERATOR_VERSION if source_kind == "generated" else "manual",
+        "claim_boundary": list(REQUIRED_BOUNDARY_CLAIMS),
+        "non_claims": list(REQUIRED_NON_CLAIMS),
+        "notes": "backend-specific native LPDDR5-PIM opcode replay; semantic JSONL remains separate",
+    }
+
+
+def validate_record(record: dict) -> None:
+    required = {"schema_version", "record_id", "opcode", "repeat", "addr_vec", "provenance"}
+    missing = sorted(required - set(record))
+    if missing:
+        raise ValueError(f"Concrete opcode record missing required fields: {missing}")
+    if record["schema_version"] != CONCRETE_SCHEMA_VERSION:
+        raise ValueError(f"Unsupported concrete opcode schema_version: {record['schema_version']}")
+    opcode = record["opcode"]
+    if opcode in FORBIDDEN_RAW_ATTACC_OPCODES:
+        raise ValueError(f"Raw AttAcc opcode is not part of the LPDDR5-PIM concrete schema: {opcode}")
+    if opcode not in CONCRETE_OPCODES:
+        raise ValueError(f"Unsupported LPDDR5-PIM concrete opcode: {opcode}")
+    repeat = record["repeat"]
+    if isinstance(repeat, bool) or not isinstance(repeat, int):
+        raise ValueError("Concrete opcode repeat must be an integer")
+    if repeat <= 0 or repeat > MAX_REPEAT:
+        raise ValueError(f"Concrete opcode repeat must be in [1, {MAX_REPEAT}]")
+    if not isinstance(record["addr_vec"], list) or not record["addr_vec"]:
+        raise ValueError("Concrete opcode addr_vec must be a non-empty list")
+    if any(not isinstance(value, int) for value in record["addr_vec"]):
+        raise ValueError("Concrete opcode addr_vec entries must be integers")
+
+    provenance = record["provenance"]
+    if not isinstance(provenance, dict):
+        raise ValueError("Concrete opcode provenance must be a map")
+    for key in ("source_kind", "manifest", "generator_version", "claim_boundary", "non_claims"):
+        if key not in provenance:
+            raise ValueError(f"Concrete opcode provenance missing required field: {key}")
+    for claim in REQUIRED_BOUNDARY_CLAIMS:
+        if claim not in provenance["claim_boundary"]:
+            raise ValueError(f"Concrete opcode provenance.claim_boundary missing {claim!r}")
+    for non_claim in REQUIRED_NON_CLAIMS:
+        if non_claim not in provenance["non_claims"]:
+            raise ValueError(f"Concrete opcode provenance.non_claims missing {non_claim!r}")
+
+
+def validate_sequence(records: list[dict]) -> None:
+    mode = "SB"
+    saw_bcast_since_hab = False
+    expanded_records = 0
+    for index, record in enumerate(records):
+        validate_record(record)
+        expanded_records += record["repeat"]
+        if expanded_records > MAX_EXPANDED_RECORDS:
+            raise ValueError(f"Concrete opcode trace exceeds max expanded records {MAX_EXPANDED_RECORDS}")
+        opcode = record["opcode"]
+        if opcode == "SB":
+            mode = "SB"
+            saw_bcast_since_hab = False
+        elif opcode == "HAB":
+            mode = "HAB"
+            saw_bcast_since_hab = False
+        elif opcode == "HAB_PIM":
+            if not saw_bcast_since_hab:
+                raise ValueError(f"Concrete opcode record {index} HAB_PIM requires a preceding PIM_BCAST in HAB mode")
+            mode = "HAB_PIM"
+        elif opcode == "PIM_BCAST":
+            if mode != "HAB":
+                raise ValueError(f"Concrete opcode record {index} PIM_BCAST requires HAB mode")
+            saw_bcast_since_hab = True
+        elif opcode == "PIM_MAC_AB":
+            if mode != "HAB_PIM" or not saw_bcast_since_hab:
+                raise ValueError(f"Concrete opcode record {index} PIM_MAC_AB requires HAB_PIM mode after PIM_BCAST")
+        elif opcode == "PIM_MAC":
+            if mode != "SB":
+                raise ValueError(f"Concrete opcode record {index} PIM_MAC requires SB mode")
+
+
+def expanded_record_count(records: list[dict]) -> int:
+    return sum(int(record["repeat"]) for record in records)
+
+
+def write_jsonl(records: list[dict], output_path: Path) -> None:
+    validate_sequence(records)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with output_path.open("w", encoding="utf-8") as handle:
+        for record in records:
+            handle.write(stable_json_dumps(record) + "\n")
+
+
+def write_json(data: dict, output_path: Path) -> None:
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(stable_json_pretty(data), encoding="utf-8")
