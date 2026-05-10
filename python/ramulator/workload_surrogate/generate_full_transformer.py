@@ -851,6 +851,10 @@ def _host_access_record(
         raise ValueError(f"Unsupported host access kind: {kind}")
     datatype = manifest["datatype"]
     bytes_per_element = 1 if datatype == "int8" else 2
+    total_bytes = max(1, int(byte_elements) * bytes_per_element)
+    tx_bytes = int(manifest["ramulator_visible_defaults"].get("tx_bytes", 64))
+    if tx_bytes <= 0:
+        raise ValueError("Host access ramulator_visible_defaults.tx_bytes must be positive")
     context_fields = {"layer_id": layer_index, "address_scope": address_scope}
     if head_index is not None:
         context_fields["head_id"] = head_index
@@ -867,15 +871,53 @@ def _host_access_record(
             "logical_dependencies": dependencies,
             "operator_context": _p4_context("host_kv_cache_accounting", op, **context_fields),
             "residency": _residency(*(inputs + outputs)),
-            "bytes": max(1, int(byte_elements) * bytes_per_element),
+            "bytes": total_bytes,
             "address_policy": {
-                "kind": "semantic_kv_cache_accounting_only",
+                "kind": "structured_host_dram_request_stream",
                 "scope": address_scope,
-                "lowering": "not_lowered_to_native_lpddr5_pim_opcode",
+                "lowering": "structured_replay_regular_dram_request",
+                "base_byte": _host_access_base_byte(
+                    layer_index=layer_index,
+                    head_index=head_index,
+                    tile_index=tile_index,
+                    address_scope=address_scope,
+                    tile_start=tile_start,
+                    tx_bytes=tx_bytes,
+                ),
+                "stride_bytes": tx_bytes,
+                "count": max(1, (total_bytes + tx_bytes - 1) // tx_bytes),
             },
         }
     )
     return record
+
+
+def _host_access_base_byte(
+    *,
+    layer_index: int,
+    head_index: int | None,
+    tile_index: int | None,
+    address_scope: str,
+    tile_start: int,
+    tx_bytes: int,
+) -> int:
+    scope_offsets = {
+        "kv_cache_k_append": 0,
+        "kv_cache_v_append": 1,
+        "kv_cache_k_tile": 2,
+        "kv_cache_v_tile": 3,
+    }
+    scope_offset = scope_offsets.get(address_scope, 4)
+    head_offset = 0 if head_index is None else int(head_index)
+    tile_offset = 0 if tile_index is None else int(tile_index)
+    request_index = (
+        int(layer_index) * 1_000_000
+        + scope_offset * 100_000
+        + head_offset * 1_000
+        + tile_offset * 10
+        + max(0, int(tile_start))
+    )
+    return request_index * tx_bytes
 
 
 def _barrier_record(record_id: str, layer_index: int, manifest: dict, *, op: str = "layer_transition") -> dict:
