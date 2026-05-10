@@ -1,4 +1,10 @@
-"""Deterministic decode-only structured workload-surrogate generator."""
+"""Legacy deterministic Phase-2 decode-only structured workload-surrogate generator.
+
+Deprecated: this module preserves the frozen P2 MVP replay contract and does
+not implement ``paper/algorithms/llama2_decode_trace_algorithm.tex``. Use
+``ramulator.workload_surrogate.generate_full_transformer.generate_llama2_7b_dense_decoder_records``
+for the current decode-block v2 Llama2 dense-decoder surrogate.
+"""
 
 from __future__ import annotations
 
@@ -21,6 +27,13 @@ from ramulator.workload_surrogate.structured_trace import (
 
 
 DEFAULT_OUTPUT_DIR = Path("ramulator2/tests/data/structured_workload_surrogate/decode_only_v0_1")
+DECODE_ONLY_GENERATOR_STATUS = "legacy_deprecated_p2_mvp"
+DECODE_ONLY_REPLACEMENT_GENERATOR = "ramulator.workload_surrogate.generate_full_transformer.generate_llama2_7b_dense_decoder_records"
+DECODE_ONLY_DEPRECATION_NOTE = (
+    "Legacy P2 MVP replay fixture; does not implement "
+    "paper/algorithms/llama2_decode_trace_algorithm.tex. "
+    f"Use {DECODE_ONLY_REPLACEMENT_GENERATOR} for decode-block v2."
+)
 
 
 def _ramulator_defaults(manifest: dict) -> dict:
@@ -429,6 +442,9 @@ def build_provenance_summary(records: list[dict], manifest: dict) -> dict:
         "pim_compute_operator_classes": list(manifest["pim_compute_operator_classes"]),
         "host_support_record_classes": list(manifest["host_support_record_classes"]),
         "host_only_provenance_classes": list(manifest["host_only_provenance_classes"]),
+        "lifecycle_status": manifest.get("lifecycle_status", DECODE_ONLY_GENERATOR_STATUS),
+        "replacement_generator": manifest.get("replacement_generator", DECODE_ONLY_REPLACEMENT_GENERATOR),
+        "deprecation_note": manifest.get("deprecation_note", DECODE_ONLY_DEPRECATION_NOTE),
         "ramulator_visible_defaults": dict(manifest["ramulator_visible_defaults"]),
         "pim_operator_request_widths": dict(manifest["pim_operator_request_widths"]),
         "scaffolding_notes": dict(manifest.get("scaffolding_notes", {})),

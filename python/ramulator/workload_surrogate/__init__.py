@@ -1,4 +1,8 @@
-"""Structured workload-surrogate trace generators."""
+"""Structured workload-surrogate trace generators.
+
+The ``decode_only`` surface is a legacy deprecated P2 MVP replay fixture. The
+current Llama2 dense-decoder surrogate lives in ``generate_full_transformer``.
+"""
 
 from ramulator.workload_surrogate.decode_only_manifest import DECODE_ONLY_MANIFEST, get_decode_only_manifest
 

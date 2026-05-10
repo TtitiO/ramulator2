@@ -10,11 +10,13 @@ tile/head metadata.
 from __future__ import annotations
 
 import argparse
+from dataclasses import dataclass
 from pathlib import Path
 
 from ramulator.workload_surrogate.structured_trace import (
     GENERATOR_VERSION,
     REQUIRED_P4_RECORD_FAMILY,
+    REQUIRED_P4_NON_CLAIMS as STRUCTURED_REQUIRED_P4_NON_CLAIMS,
     SCHEMA_VERSION,
     expanded_record_count,
     validate_record,
@@ -25,15 +27,99 @@ from ramulator.workload_surrogate.structured_trace import (
 
 FULL_TRANSFORMER_GENERATOR_VERSION = f"{GENERATOR_VERSION}-p4-full-transformer"
 DEFAULT_OUTPUT_DIR = Path("ramulator2/tests/data/structured_workload_surrogate/full_transformer_attention_v0_1")
-REQUIRED_P4_NON_CLAIMS = {
-    "not_runtime_replay",
-    "not_vllm_replay",
-    "not_numerical_correctness",
-    "not_silicon_faithful_softmax_or_data_movement",
-    "not_raw_attacc_schema",
-}
+REQUIRED_P4_NON_CLAIMS = set(STRUCTURED_REQUIRED_P4_NON_CLAIMS)
 SUPPORTED_ATTENTION_DATATYPES = {"int8", "fp16", "bf16"}
+LLAMA2_7B_NUM_LAYERS = 32
+LLAMA2_7B_NUM_HEADS = 32
+LLAMA2_7B_HEAD_DIM = 128
+LLAMA2_7B_HIDDEN_SIZE = 4096
+LLAMA2_7B_FFN_HIDDEN_SIZE = 11008
+LLAMA2_7B_DEFAULT_PAST_LEN = 1024
+LLAMA2_13B_NUM_LAYERS = 40
+LLAMA2_13B_NUM_HEADS = 40
+LLAMA2_13B_HEAD_DIM = 128
+LLAMA2_13B_HIDDEN_SIZE = 5120
+LLAMA2_13B_FFN_HIDDEN_SIZE = 13824
+LLAMA2_13B_DEFAULT_PAST_LEN = 1024
 _VALID_DISTRIBUTION_POLICIES = {"broadcast", "bank_sharded", "replicated"}
+
+
+@dataclass(frozen=True)
+class ModelSpec:
+    name: str
+    num_layers: int
+    hidden_size: int
+    num_heads: int
+    head_dim: int
+    ffn_hidden_size: int
+    datatype: str = "int8"
+    num_kv_heads: int | None = None
+
+    def __post_init__(self):
+        if self.num_kv_heads is None:
+            object.__setattr__(self, "num_kv_heads", self.num_heads)
+
+
+@dataclass(frozen=True)
+class DecodeTraceScope:
+    seq_len: int
+    past_len: int
+    include_qkvo_projections: bool
+    score_tile_tokens: int
+    context_tile_tokens: int
+
+    @classmethod
+    def llama2_7b_decode_v2(cls) -> "DecodeTraceScope":
+        return cls(
+            seq_len=1,
+            past_len=LLAMA2_7B_DEFAULT_PAST_LEN,
+            include_qkvo_projections=True,
+            score_tile_tokens=256,
+            context_tile_tokens=256,
+        )
+
+    @classmethod
+    def llama2_13b_decode_v2(cls) -> "DecodeTraceScope":
+        return cls(
+            seq_len=1,
+            past_len=LLAMA2_13B_DEFAULT_PAST_LEN,
+            include_qkvo_projections=True,
+            score_tile_tokens=256,
+            context_tile_tokens=256,
+        )
+
+
+LLAMA2_7B_MODEL_SPEC = ModelSpec(
+    name="Llama2-7B",
+    num_layers=LLAMA2_7B_NUM_LAYERS,
+    hidden_size=LLAMA2_7B_HIDDEN_SIZE,
+    num_heads=LLAMA2_7B_NUM_HEADS,
+    head_dim=LLAMA2_7B_HEAD_DIM,
+    ffn_hidden_size=LLAMA2_7B_FFN_HIDDEN_SIZE,
+)
+LLAMA2_13B_MODEL_SPEC = ModelSpec(
+    name="Llama2-13B",
+    num_layers=LLAMA2_13B_NUM_LAYERS,
+    hidden_size=LLAMA2_13B_HIDDEN_SIZE,
+    num_heads=LLAMA2_13B_NUM_HEADS,
+    head_dim=LLAMA2_13B_HEAD_DIM,
+    ffn_hidden_size=LLAMA2_13B_FFN_HIDDEN_SIZE,
+)
+MODEL_REGISTRY = {
+    "llama2-7b": LLAMA2_7B_MODEL_SPEC,
+    "llama2_7b": LLAMA2_7B_MODEL_SPEC,
+    "Llama2-7B": LLAMA2_7B_MODEL_SPEC,
+    "llama2-13b": LLAMA2_13B_MODEL_SPEC,
+    "llama2_13b": LLAMA2_13B_MODEL_SPEC,
+    "Llama2-13B": LLAMA2_13B_MODEL_SPEC,
+}
+
+
+def get_model_spec(name: str) -> ModelSpec:
+    try:
+        return MODEL_REGISTRY[name]
+    except KeyError as exc:
+        raise ValueError(f"Unsupported model spec: {name}") from exc
 
 
 def get_tiny_attention_manifest() -> dict:
@@ -131,6 +217,161 @@ def get_tiny_ffn_manifest() -> dict:
             "not_raw_attacc_schema",
         ],
     }
+
+
+def _llama2_common_non_claims() -> list[str]:
+    return list(STRUCTURED_REQUIRED_P4_NON_CLAIMS)
+
+
+def get_llama2_dense_decoder_attention_manifest(
+    model: ModelSpec | str,
+    *,
+    past_len: int = LLAMA2_7B_DEFAULT_PAST_LEN,
+    schedule_policy: str = "serialized",
+) -> dict:
+    spec = get_model_spec(model) if isinstance(model, str) else model
+    tile_tokens = min(256, past_len)
+    model_slug = spec.name.lower().replace("-", "_")
+    name_dims = "" if spec == LLAMA2_7B_MODEL_SPEC else f"_hidden{spec.hidden_size}"
+    return {
+        "manifest_version": f"{spec.name.lower()}-attention-v0.1",
+        "manifest_name": f"{model_slug}_{spec.num_layers}_layer{name_dims}_attention_decode",
+        "workload_class": "structured_transformer_attention_surrogate",
+        "phase": "decode",
+        "model_family": f"{spec.name} dense decoder attention slice",
+        "model_citation": "Llama 2 (Touvron et al., arXiv:2307.09288)",
+        "model_total_layers": spec.num_layers,
+        "num_layers": spec.num_layers,
+        "num_heads": spec.num_heads,
+        "num_kv_heads": spec.num_kv_heads,
+        "head_dim": spec.head_dim,
+        "hidden_size": spec.hidden_size,
+        "past_len": past_len,
+        "seq_len": 1,
+        "datatype": spec.datatype,
+        "score_tile_tokens": tile_tokens,
+        "context_tile_tokens": tile_tokens,
+        "head_group_size": 1,
+        "schedule_policy": schedule_policy,
+        "operand_movement_policy": {
+            "weights": "preloaded_stationary",
+            "dynamic_activation_setup": "materialized",
+            "ffn_intermediate": "bank_local_capacity_controlled",
+        },
+        "ramulator_visible_defaults": {
+            "bank_sequence": [0, 1, 2, 3],
+            "bank_sequence_order": "frontend",
+            "pim_banks_per_mpu": 1,
+            "burst_length": 1,
+            "row_start": 0,
+            "row_count": 16,
+            "dependency_count": 8,
+            "column_start": 0,
+        },
+        "mapping_policy": {
+            "host_policy": "semantic_tensor_io_only",
+            "pim_policy": "native_lpddr5_pim_attention_tiles",
+            "bank_sequence_policy": "manifest_order",
+            "mpu_grouping_policy": "manifest_pim_banks_per_mpu",
+        },
+        "literature_anchors": [
+            "Llama 2 (Touvron et al., 2023)",
+            "LPDDR5-PIM native opcode surface",
+        ],
+        "non_claims": _llama2_common_non_claims(),
+    }
+
+
+def get_llama2_dense_decoder_ffn_manifest(
+    model: ModelSpec | str,
+    *,
+    schedule_policy: str = "serialized",
+) -> dict:
+    spec = get_model_spec(model) if isinstance(model, str) else model
+    model_slug = spec.name.lower().replace("-", "_")
+    name_dims = "" if spec == LLAMA2_7B_MODEL_SPEC else f"_hidden{spec.hidden_size}_ffn{spec.ffn_hidden_size}"
+    return {
+        "manifest_version": f"{spec.name.lower()}-ffn-v0.1",
+        "manifest_name": f"{model_slug}_{spec.num_layers}_layer{name_dims}_ffn_swiglu_decode",
+        "workload_class": "structured_transformer_ffn_swiglu_surrogate",
+        "phase": "decode",
+        "model_family": f"{spec.name} dense decoder FFN/SwiGLU slice",
+        "model_citation": "Llama 2 (Touvron et al., arXiv:2307.09288)",
+        "model_total_layers": spec.num_layers,
+        "num_layers": spec.num_layers,
+        "seq_len": 1,
+        "hidden_size": spec.hidden_size,
+        "ffn_hidden_size": spec.ffn_hidden_size,
+        "ffn_activation_tile_size": spec.hidden_size,
+        "activation_distribution_policy": "broadcast",
+        "activation": "silu",
+        "datatype": spec.datatype,
+        "schedule_policy": schedule_policy,
+        "operand_movement_policy": {
+            "weights": "preloaded_stationary",
+            "dynamic_activation_setup": "materialized",
+            "ffn_intermediate": "bank_local_capacity_controlled",
+        },
+        "ramulator_visible_defaults": {
+            "bank_sequence": [0, 1, 2, 3],
+            "bank_sequence_order": "frontend",
+            "pim_banks_per_mpu": 1,
+            "burst_length": 1,
+            "row_start": 0,
+            "row_count": 16,
+            "dependency_count": 8,
+            "column_start": 0,
+        },
+        "mapping_policy": {
+            "host_policy": "semantic_tensor_io_only",
+            "pim_policy": "native_lpddr5_pim_ffn_tiles",
+            "bank_sequence_policy": "manifest_order",
+            "mpu_grouping_policy": "manifest_pim_banks_per_mpu",
+        },
+        "literature_anchors": [
+            "Llama 2 (Touvron et al., 2023)",
+            "LPDDR5-PIM native opcode surface",
+        ],
+        "non_claims": _llama2_common_non_claims(),
+    }
+
+
+def get_llama2_7b_full_depth_attention_manifest(
+    *, past_len: int = LLAMA2_7B_DEFAULT_PAST_LEN, schedule_policy: str = "serialized"
+) -> dict:
+    return get_llama2_dense_decoder_attention_manifest(LLAMA2_7B_MODEL_SPEC, past_len=past_len, schedule_policy=schedule_policy)
+
+
+def get_llama2_7b_full_depth_ffn_manifest(*, schedule_policy: str = "serialized") -> dict:
+    return get_llama2_dense_decoder_ffn_manifest(LLAMA2_7B_MODEL_SPEC, schedule_policy=schedule_policy)
+
+
+def get_llama2_7b_dense_decoder_manifests(
+    *, past_len: int = LLAMA2_7B_DEFAULT_PAST_LEN, schedule_policy: str = "serialized"
+) -> tuple[dict, dict]:
+    return (
+        get_llama2_7b_full_depth_attention_manifest(past_len=past_len, schedule_policy=schedule_policy),
+        get_llama2_7b_full_depth_ffn_manifest(schedule_policy=schedule_policy),
+    )
+
+
+def get_llama2_13b_full_depth_attention_manifest(
+    *, past_len: int = LLAMA2_13B_DEFAULT_PAST_LEN, schedule_policy: str = "serialized"
+) -> dict:
+    return get_llama2_dense_decoder_attention_manifest(LLAMA2_13B_MODEL_SPEC, past_len=past_len, schedule_policy=schedule_policy)
+
+
+def get_llama2_13b_full_depth_ffn_manifest(*, schedule_policy: str = "serialized") -> dict:
+    return get_llama2_dense_decoder_ffn_manifest(LLAMA2_13B_MODEL_SPEC, schedule_policy=schedule_policy)
+
+
+def get_llama2_13b_dense_decoder_manifests(
+    *, past_len: int = LLAMA2_13B_DEFAULT_PAST_LEN, schedule_policy: str = "serialized"
+) -> tuple[dict, dict]:
+    return (
+        get_llama2_13b_full_depth_attention_manifest(past_len=past_len, schedule_policy=schedule_policy),
+        get_llama2_13b_full_depth_ffn_manifest(schedule_policy=schedule_policy),
+    )
 
 
 def get_tiny_moe_manifest() -> dict:
@@ -589,6 +830,84 @@ def _data_move_record(
     return record
 
 
+def _host_access_record(
+    record_id: str,
+    kind: str,
+    layer_index: int,
+    op: str,
+    manifest: dict,
+    *,
+    head_index: int | None = None,
+    tile_index: int | None = None,
+    tile_tokens: int | None = None,
+    inputs: list[str],
+    outputs: list[str],
+    dependencies: list[str],
+    byte_elements: int,
+    address_scope: str,
+    tile_start: int = 0,
+) -> dict:
+    if kind not in {"HostRead", "HostWrite"}:
+        raise ValueError(f"Unsupported host access kind: {kind}")
+    datatype = manifest["datatype"]
+    bytes_per_element = 1 if datatype == "int8" else 2
+    context_fields = {"layer_id": layer_index, "address_scope": address_scope}
+    if head_index is not None:
+        context_fields["head_id"] = head_index
+        context_fields["head_group_id"] = head_index // int(manifest["head_group_size"])
+    if tile_index is not None:
+        context_fields["tile_id"] = tile_index
+        context_fields["tile_start"] = tile_start
+    if tile_tokens is not None:
+        context_fields["tile_tokens"] = tile_tokens
+    record = _base_record(record_id, kind, layer_index, op, manifest)
+    record.update(
+        {
+            "tensor_io": {"inputs": inputs, "outputs": outputs},
+            "logical_dependencies": dependencies,
+            "operator_context": _p4_context("host_kv_cache_accounting", op, **context_fields),
+            "residency": _residency(*(inputs + outputs)),
+            "bytes": max(1, int(byte_elements) * bytes_per_element),
+            "address_policy": {
+                "kind": "semantic_kv_cache_accounting_only",
+                "scope": address_scope,
+                "lowering": "not_lowered_to_native_lpddr5_pim_opcode",
+            },
+        }
+    )
+    return record
+
+
+def _barrier_record(record_id: str, layer_index: int, manifest: dict, *, op: str = "layer_transition") -> dict:
+    if op not in {"layer_start", "layer_transition"}:
+        raise ValueError(f"Unsupported decode-block barrier op: {op}")
+    record = _base_record(record_id, "Barrier", layer_index, op, manifest)
+    record.update(
+        {
+            "barrier_scope": {
+                "kind": op,
+                "layer_id": layer_index,
+                "lowering": "semantic_ordering_only",
+            }
+        }
+    )
+    return record
+
+
+def _drain_record(record_id: str, layer_index: int, manifest: dict) -> dict:
+    record = _base_record(record_id, "Drain", layer_index, "final_drain", manifest)
+    record.update(
+        {
+            "drain_scope": {
+                "kind": "final_drain",
+                "layer_id": layer_index,
+                "lowering": "semantic_ordering_only",
+            }
+        }
+    )
+    return record
+
+
 def _semantic_operand_record(
     record_id: str,
     kind: str,
@@ -843,8 +1162,12 @@ def _ffn_projection_record(
     elif op == "ffn_down_projection":
         n = hidden_size
         k = ffn_hidden_size
+    elif op in {"q_projection", "k_projection", "v_projection", "o_projection"}:
+        n = hidden_size
+        k = hidden_size
     else:
-        raise ValueError(f"Unsupported FFN projection op: {op}")
+        raise ValueError(f"Unsupported projection op: {op}")
+    operator_family = "dense_qkvo_projection" if op in {"q_projection", "k_projection", "v_projection", "o_projection"} else "ffn_swiglu"
 
     record = _base_record(record_id, "FFNProjection", layer_index, op, manifest)
     record.update(
@@ -852,7 +1175,7 @@ def _ffn_projection_record(
             "tensor_io": {"inputs": inputs, "outputs": outputs},
             "logical_dependencies": dependencies,
             "operator_context": _p4_context(
-                "ffn_swiglu",
+                operator_family,
                 op,
                 layer_id=layer_index,
                 stage_index=stage_index,
@@ -1078,10 +1401,11 @@ def _append_attention_score_records(
         score_tensor = f"L{layer_index}.H{head_index}.T{tile_index}.score"
         k_load_id = f"rec_{next_id:04d}"
         records.append(
-            _data_move_record(
+            _host_access_record(
                 k_load_id,
+                "HostRead",
                 layer_index,
-                "attention_k_tile_load",
+                "kv_cache_k_tile_read",
                 manifest,
                 head_index=head_index,
                 tile_index=tile_index,
@@ -1089,6 +1413,8 @@ def _append_attention_score_records(
                 inputs=[k_tensor],
                 outputs=[f"{k_tensor}.resident"],
                 dependencies=[],
+                byte_elements=tile_tokens * int(manifest["head_dim"]),
+                address_scope="kv_cache_k_tile",
                 tile_start=tile_start,
             )
         )
@@ -1154,10 +1480,11 @@ def _append_attention_softmax_context_records(
         context_tensor = f"L{layer_index}.H{head_index}.T{tile_index}.context"
         v_load_id = f"rec_{next_id:04d}"
         records.append(
-            _data_move_record(
+            _host_access_record(
                 v_load_id,
+                "HostRead",
                 layer_index,
-                "attention_v_tile_load",
+                "kv_cache_v_tile_read",
                 manifest,
                 head_index=head_index,
                 tile_index=tile_index,
@@ -1165,6 +1492,8 @@ def _append_attention_softmax_context_records(
                 inputs=[v_tensor],
                 outputs=[f"{v_tensor}.resident"],
                 dependencies=[softmax_id],
+                byte_elements=tile_tokens * int(manifest["head_dim"]),
+                address_scope="kv_cache_v_tile",
                 tile_start=tile_start,
             )
         )
@@ -1295,7 +1624,6 @@ def generate_ffn_records(manifest: dict | None = None) -> list[dict]:
     hidden_size = int(manifest["hidden_size"])
     for layer_index in range(int(manifest["num_layers"])):
         hidden = f"L{layer_index}.hidden"
-        hidden_resident = f"L{layer_index}.hidden.resident"
         hidden_reused = f"L{layer_index}.hidden.reused_for_up_gate"
         up_weight = f"L{layer_index}.ffn.up_weight"
         gate_weight = f"L{layer_index}.ffn.gate_weight"
@@ -1310,6 +1638,7 @@ def generate_ffn_records(manifest: dict | None = None) -> list[dict]:
         # Per-tile hidden activation setup: emit one PIMDataMove per tile
         tile_ranges = list(_tile_ranges(hidden_size, ffn_activation_tile_size))
         hidden_setup_ids: list[str] = []
+        tile_hidden_residents: list[str] = []
         for tile_index, (tile_start, tile_elements) in enumerate(tile_ranges):
             tile_hidden = f"L{layer_index}.T{tile_index}.hidden"
             tile_hidden_resident = f"L{layer_index}.T{tile_index}.hidden.resident"
@@ -1333,6 +1662,7 @@ def generate_ffn_records(manifest: dict | None = None) -> list[dict]:
                 )
             )
             hidden_setup_ids.append(setup_id)
+            tile_hidden_residents.append(tile_hidden_resident)
             next_id += 1
 
         weight_ids: dict[str, str] = {}
@@ -1373,7 +1703,7 @@ def generate_ffn_records(manifest: dict | None = None) -> list[dict]:
                 manifest,
                 operator_family="ffn_swiglu",
                 stage="operand_reuse",
-                inputs=[hidden_resident],
+                inputs=tile_hidden_residents,
                 outputs=[hidden_reused],
                 dependencies=hidden_setup_ids,
                 operand_role="activation_input",
@@ -1717,6 +2047,47 @@ def _renumber_records(records: list[dict], start_id: int) -> tuple[list[dict], i
     return renumbered, start_id + len(records)
 
 
+def _retarget_layer_zero_record(record: dict, layer_index: int) -> dict:
+    def retarget(value):
+        if isinstance(value, str):
+            return value.replace("layer_00", f"layer_{layer_index:02d}").replace("L0.", f"L{layer_index}.")
+        if isinstance(value, list):
+            return [retarget(item) for item in value]
+        if isinstance(value, dict):
+            return {key: retarget(item) for key, item in value.items()}
+        return value
+
+    updated = retarget(record)
+    if "operator_context" in updated:
+        updated["operator_context"]["layer_id"] = layer_index
+    if "barrier_scope" in updated:
+        updated["barrier_scope"]["layer_id"] = layer_index
+    if "drain_scope" in updated:
+        updated["drain_scope"]["layer_id"] = layer_index
+    return updated
+
+
+def _one_layer_manifest(manifest: dict) -> dict:
+    one_layer = dict(manifest)
+    one_layer["num_layers"] = 1
+    return one_layer
+
+
+def _validate_dense_decode_v2_supported_manifests(attention_manifest: dict, ffn_manifest: dict) -> None:
+    num_heads = int(attention_manifest["num_heads"])
+    head_dim = int(attention_manifest["head_dim"])
+    hidden_size = int(attention_manifest["hidden_size"])
+    num_kv_heads = int(attention_manifest.get("kv_heads", attention_manifest.get("num_kv_heads", num_heads)))
+    if num_kv_heads != num_heads:
+        raise ValueError("decode-block v2 currently supports dense MHA only; GQA/MQA num_kv_heads != num_heads is unsupported")
+    if hidden_size != num_heads * head_dim:
+        raise ValueError("decode-block v2 requires hidden_size == num_heads * head_dim for dense MHA projection shapes")
+    if int(ffn_manifest["hidden_size"]) != hidden_size:
+        raise ValueError("Dense decoder attention/FFN manifests must use the same hidden_size")
+    if attention_manifest["datatype"] != ffn_manifest["datatype"]:
+        raise ValueError("Dense decoder attention/FFN manifests must use the same datatype")
+
+
 def generate_full_transformer_layer_records(
     *,
     attention_manifest: dict | None = None,
@@ -1736,6 +2107,193 @@ def generate_full_transformer_layer_records(
     for record in combined:
         validate_record(record)
     return combined
+
+
+def _generate_decode_v2_qkvo_projection_records(manifest: dict) -> list[dict]:
+    records: list[dict] = []
+    next_id = 0
+    for layer_index in range(int(manifest["num_layers"])):
+        hidden = f"L{layer_index}.hidden"
+        for stage_index, op in enumerate(["q_projection", "k_projection", "v_projection"]):
+            output = f"L{layer_index}.{op.removesuffix('_projection').upper()}"
+            weight = f"L{layer_index}.{op}.weight.resident"
+            records.append(
+                _ffn_projection_record(
+                    f"rec_{next_id:04d}",
+                    layer_index,
+                    manifest,
+                    op=op,
+                    stage_index=stage_index,
+                    inputs=[hidden, weight],
+                    outputs=[output],
+                    dependencies=[],
+                )
+            )
+            next_id += 1
+    for record in records:
+        validate_record(record)
+    return records
+
+
+def _generate_decode_v2_output_projection_records(manifest: dict) -> list[dict]:
+    records: list[dict] = []
+    next_id = 0
+    for layer_index in range(int(manifest["num_layers"])):
+        records.append(
+            _ffn_projection_record(
+                f"rec_{next_id:04d}",
+                layer_index,
+                manifest,
+                op="o_projection",
+                stage_index=3,
+                inputs=[f"L{layer_index}.attention_context", f"L{layer_index}.o_projection.weight.resident"],
+                outputs=[f"L{layer_index}.attention_output"],
+                dependencies=[],
+            )
+        )
+        next_id += 1
+    for record in records:
+        validate_record(record)
+    return records
+
+
+def _generate_decode_v2_kv_cache_write_records(manifest: dict) -> list[dict]:
+    records: list[dict] = []
+    next_id = 0
+    hidden_size = int(manifest["hidden_size"])
+    for layer_index in range(int(manifest["num_layers"])):
+        for op, tensor in [("kv_cache_k_append", "K"), ("kv_cache_v_append", "V")]:
+            records.append(
+                _host_access_record(
+                    f"rec_{next_id:04d}",
+                    "HostWrite",
+                    layer_index,
+                    op,
+                    manifest,
+                    inputs=[f"L{layer_index}.{tensor}"],
+                    outputs=[f"L{layer_index}.kv_cache.{tensor}.current_token"],
+                    dependencies=[],
+                    byte_elements=hidden_size,
+                    address_scope=op,
+                )
+            )
+            next_id += 1
+    for record in records:
+        validate_record(record)
+    return records
+
+
+def _generate_decode_v2_boundary_records(manifest: dict) -> list[dict]:
+    records: list[dict] = []
+    next_id = 0
+    num_layers = int(manifest["num_layers"])
+    for layer_index in range(num_layers):
+        records.append(_barrier_record(f"rec_{next_id:04d}", layer_index, manifest))
+        next_id += 1
+    records.append(_drain_record(f"rec_{next_id:04d}", max(0, num_layers - 1), manifest))
+    for record in records:
+        validate_record(record)
+    return records
+
+
+def generate_dense_transformer_layer_records(*, attention_manifest: dict, ffn_manifest: dict) -> list[dict]:
+    _validate_dense_decode_v2_supported_manifests(attention_manifest, ffn_manifest)
+    combined: list[dict] = []
+    next_id = 0
+    num_layers = int(attention_manifest["num_layers"])
+    if int(ffn_manifest["num_layers"]) != num_layers:
+        raise ValueError("Dense decoder attention/FFN manifests must use the same num_layers")
+
+    one_attention = _one_layer_manifest(attention_manifest)
+    one_ffn = _one_layer_manifest(ffn_manifest)
+    for layer_index in range(num_layers):
+        layer_start, next_id = _renumber_records([_barrier_record("rec_0000", layer_index, attention_manifest, op="layer_start")], next_id)
+        combined.extend(layer_start)
+
+        qkv, next_id = _renumber_records(_generate_decode_v2_qkvo_projection_records(one_ffn), next_id)
+        qkv = [_retarget_layer_zero_record(record, layer_index) for record in qkv]
+        q_id = [record for record in qkv if record["op"] == "q_projection"][0]["record_id"]
+        k_id = [record for record in qkv if record["op"] == "k_projection"][0]["record_id"]
+        v_id = [record for record in qkv if record["op"] == "v_projection"][0]["record_id"]
+        combined.extend(qkv)
+
+        kv_writes, next_id = _renumber_records(_generate_decode_v2_kv_cache_write_records(one_attention), next_id)
+        kv_writes = [_retarget_layer_zero_record(record, layer_index) for record in kv_writes]
+        for record in kv_writes:
+            if record["op"] == "kv_cache_k_append":
+                record["logical_dependencies"] = [k_id]
+            elif record["op"] == "kv_cache_v_append":
+                record["logical_dependencies"] = [v_id]
+        k_append_id = [record for record in kv_writes if record["op"] == "kv_cache_k_append"][0]["record_id"]
+        v_append_id = [record for record in kv_writes if record["op"] == "kv_cache_v_append"][0]["record_id"]
+        combined.extend(kv_writes)
+
+        attention, next_id = _renumber_records(generate_attention_records(one_attention), next_id)
+        attention = [_retarget_layer_zero_record(record, layer_index) for record in attention]
+        for record in attention:
+            if record["kind"] == "AttentionScore":
+                record["tensor_io"]["inputs"][0] = f"L{layer_index}.Q"
+                record["logical_dependencies"] = [q_id, *record["logical_dependencies"]]
+            elif record["op"] == "kv_cache_k_tile_read":
+                record["logical_dependencies"] = [k_append_id]
+            elif record["op"] == "kv_cache_v_tile_read":
+                record["logical_dependencies"] = [v_append_id, *record["logical_dependencies"]]
+        terminal_attention_ids = [
+            record["record_id"]
+            for record in attention
+            if record["kind"] == "PIMElementwise" and record["op"] == "attention_context_reduction_accounting"
+        ] or [record["record_id"] for record in attention if record["kind"] == "AttentionContext"]
+        terminal_attention_tensors = [
+            output
+            for record in attention
+            if record["record_id"] in terminal_attention_ids
+            for output in record.get("tensor_io", {}).get("outputs", [])
+        ]
+        combined.extend(attention)
+
+        output_projection, next_id = _renumber_records(_generate_decode_v2_output_projection_records(one_ffn), next_id)
+        output_projection = [_retarget_layer_zero_record(record, layer_index) for record in output_projection]
+        output_projection[0]["tensor_io"]["inputs"] = terminal_attention_tensors + [f"L{layer_index}.o_projection.weight.resident"]
+        output_projection[0]["logical_dependencies"] = terminal_attention_ids
+        o_id = output_projection[0]["record_id"]
+        combined.extend(output_projection)
+
+        ffn, next_id = _renumber_records(generate_ffn_records(one_ffn), next_id)
+        ffn = [_retarget_layer_zero_record(record, layer_index) for record in ffn]
+        for record in ffn:
+            if record["op"] == "ffn_hidden_activation_tile_setup":
+                record["tensor_io"]["inputs"] = [f"L{layer_index}.attention_output"]
+                record["logical_dependencies"] = [o_id]
+        combined.extend(ffn)
+
+        barrier, next_id = _renumber_records([_barrier_record("rec_0000", layer_index, attention_manifest)], next_id)
+        combined.extend(barrier)
+
+    drain, next_id = _renumber_records([_drain_record("rec_0000", max(0, num_layers - 1), attention_manifest)], next_id)
+    combined.extend(drain)
+    for record in combined:
+        validate_record(record)
+    return combined
+
+
+def generate_llama2_7b_dense_decoder_records(
+    *, attention_manifest: dict | None = None, ffn_manifest: dict | None = None
+) -> list[dict]:
+    if attention_manifest is None or ffn_manifest is None:
+        default_attention, default_ffn = get_llama2_7b_dense_decoder_manifests()
+        attention_manifest = default_attention if attention_manifest is None else attention_manifest
+        ffn_manifest = default_ffn if ffn_manifest is None else ffn_manifest
+    return generate_dense_transformer_layer_records(attention_manifest=attention_manifest, ffn_manifest=ffn_manifest)
+
+
+def generate_llama2_13b_dense_decoder_records(
+    *, attention_manifest: dict | None = None, ffn_manifest: dict | None = None
+) -> list[dict]:
+    if attention_manifest is None or ffn_manifest is None:
+        default_attention, default_ffn = get_llama2_13b_dense_decoder_manifests()
+        attention_manifest = default_attention if attention_manifest is None else attention_manifest
+        ffn_manifest = default_ffn if ffn_manifest is None else ffn_manifest
+    return generate_dense_transformer_layer_records(attention_manifest=attention_manifest, ffn_manifest=ffn_manifest)
 
 
 def _summary_manifest_fields(manifest: dict | None = None, manifest_name: str | None = None) -> dict:
@@ -1798,6 +2356,18 @@ def build_full_transformer_provenance_summary(records: list[dict], manifest_or_n
         manifest_name=manifest_name,
         notes="combined P4 attention+FFN+MoE offline semantic DAG summary; concrete opcode trace is the replay path",
         compute_kinds={"AttentionScore", "AttentionContext", "FFNProjection", "MoERouter", "MoEExpertFFN"},
+    )
+
+
+def build_dense_decoder_provenance_summary(
+    records: list[dict], manifest_or_name: dict | str | None = None, *, manifest_name: str | None = None
+) -> dict:
+    return _build_provenance_summary(
+        records,
+        manifest_or_name,
+        manifest_name=manifest_name,
+        notes="dense P4 attention+FFN offline semantic DAG summary; concrete opcode trace is the replay path",
+        compute_kinds={"AttentionScore", "AttentionContext", "FFNProjection"},
     )
 
 

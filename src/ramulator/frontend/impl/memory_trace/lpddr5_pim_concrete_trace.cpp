@@ -39,10 +39,10 @@ class LPDDR5PIMConcreteTrace : public IFrontEnd, public Implementation {
   int m_cmd_hab = -1;
   int m_cmd_hab_pim = -1;
   int m_addr_vec_size = 0;
-  int64_t m_max_trace_bytes = 16 * 1024 * 1024;
+  int64_t m_max_trace_bytes = 1024 * 1024 * 1024;
   int m_max_records = 1000000;
   int m_max_repeat = 1000000;
-  int64_t m_max_expanded_records = 10000000;
+  int64_t m_max_expanded_records = 1000000000;
 
   size_t m_curr_record_idx = 0;
   int m_curr_repeat_idx = 0;
@@ -70,10 +70,10 @@ class LPDDR5PIMConcreteTrace : public IFrontEnd, public Implementation {
     RAMULATOR_PARSE_PARAM(m_cmd_hab, int, "hab_command_id").required();
     RAMULATOR_PARSE_PARAM(m_cmd_hab_pim, int, "hab_pim_command_id").required();
     RAMULATOR_PARSE_PARAM(m_addr_vec_size, int, "addr_vec_size").required();
-    RAMULATOR_PARSE_PARAM(m_max_trace_bytes, int64_t, "max_trace_bytes").default_val(16777216);
+    RAMULATOR_PARSE_PARAM(m_max_trace_bytes, int64_t, "max_trace_bytes").default_val(1024 * 1024 * 1024);
     RAMULATOR_PARSE_PARAM(m_max_records, int, "max_records").default_val(1000000);
     RAMULATOR_PARSE_PARAM(m_max_repeat, int, "max_repeat").default_val(1000000);
-    RAMULATOR_PARSE_PARAM(m_max_expanded_records, int64_t, "max_expanded_records").default_val(10000000);
+    RAMULATOR_PARSE_PARAM(m_max_expanded_records, int64_t, "max_expanded_records").default_val(1000000000);
 
     if (m_addr_vec_size <= 0) {
       throw std::runtime_error("LPDDR5PIMConcreteTrace: addr_vec_size must be positive");

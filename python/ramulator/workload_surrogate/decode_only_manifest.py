@@ -9,6 +9,13 @@ DECODE_ONLY_MANIFEST = {
     "manifest_name": "decode_only_tuple",
     "manifest_version": "v0.1",
     "trace_contract_version": "v0.1",
+    "lifecycle_status": "legacy_deprecated_p2_mvp",
+    "replacement_generator": "ramulator.workload_surrogate.generate_full_transformer.generate_llama2_7b_dense_decoder_records",
+    "deprecation_note": (
+        "Legacy P2 MVP replay fixture; does not implement "
+        "paper/algorithms/llama2_decode_trace_algorithm.tex. "
+        "Use generate_full_transformer.generate_llama2_7b_dense_decoder_records for decode-block v2."
+    ),
     "workload_class": "decode-heavy structured surrogate",
     "phase": "decode",
     "batch": 1,
@@ -42,6 +49,10 @@ DECODE_ONLY_MANIFEST = {
         "rope_or_position_update",
         "control_flow",
         "kv_cache_append_accounting",
+    ],
+    "non_claims": [
+        "does_not_implement_paper_algorithm",
+        "legacy_phase2_mvp_replay_fixture",
     ],
     "ramulator_visible_defaults": {
         "bank_sequence": [0, 1, 2, 3],
