@@ -118,6 +118,9 @@ class LPDDR5PIM(LPDDR5):
         "pim_vrf_access_energy_pJ + "
         "pim_srf_access_energy_pJ"
     )
+    # Bounded attribution only: PIM_BCAST models all-bank setup/broadcast
+    # pressure. Public Samsung-style PIM sources describe this as HAB/all-bank
+    # WR-like broadcast behavior; these event terms are not silicon-calibrated.
     power_incremental_command_event_energy_exprs = {
         "PIM_MAC": _pim_mac_event_energy_expr,
         "PIM_MAC_AB": _pim_mac_event_energy_expr,
@@ -204,6 +207,8 @@ class LPDDR5PIM(LPDDR5):
             following=["PIM_MAC_AB"],
             latency="nPIM_MAC_II",
         ),
+        # Bounded spacing abstraction for the synthetic PIM_BCAST opcode; exact
+        # LPDDR5-PIM broadcast/source timing is not public silicon ground truth.
         TimingConstraint(
             level="Rank",
             preceding=["PIM_BCAST"],

@@ -2,6 +2,7 @@
 #include <filesystem>
 #include <fmt/format.h>
 #include <fstream>
+#include <limits>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -26,6 +27,8 @@ class LPDDR5PIMConcreteTrace : public IFrontEnd, public Implementation {
     int request_type_id;
     int command_id;
     int repeat;
+    int64_t addr_byte;
+    int64_t addr_byte_stride;
   };
 
   std::vector<OpcodeRecord> m_records;
@@ -39,7 +42,7 @@ class LPDDR5PIMConcreteTrace : public IFrontEnd, public Implementation {
   int m_cmd_hab = -1;
   int m_cmd_hab_pim = -1;
   int m_addr_vec_size = 0;
-  int64_t m_max_trace_bytes = 1024 * 1024 * 1024;
+  int64_t m_max_trace_bytes = 1073741824;
   int m_max_records = 1000000;
   int m_max_repeat = 1000000;
   int64_t m_max_expanded_records = 1000000000;
@@ -58,6 +61,8 @@ class LPDDR5PIMConcreteTrace : public IFrontEnd, public Implementation {
   size_t s_pim_bcast_records = 0;
   size_t s_pim_mac_records = 0;
   size_t s_pim_mac_ab_records = 0;
+  size_t s_read_records = 0;
+  size_t s_write_records = 0;
 
  public:
   void init() override {
@@ -70,7 +75,7 @@ class LPDDR5PIMConcreteTrace : public IFrontEnd, public Implementation {
     RAMULATOR_PARSE_PARAM(m_cmd_hab, int, "hab_command_id").required();
     RAMULATOR_PARSE_PARAM(m_cmd_hab_pim, int, "hab_pim_command_id").required();
     RAMULATOR_PARSE_PARAM(m_addr_vec_size, int, "addr_vec_size").required();
-    RAMULATOR_PARSE_PARAM(m_max_trace_bytes, int64_t, "max_trace_bytes").default_val(1024 * 1024 * 1024);
+    RAMULATOR_PARSE_PARAM(m_max_trace_bytes, int64_t, "max_trace_bytes").default_val(1073741824);
     RAMULATOR_PARSE_PARAM(m_max_records, int, "max_records").default_val(1000000);
     RAMULATOR_PARSE_PARAM(m_max_repeat, int, "max_repeat").default_val(1000000);
     RAMULATOR_PARSE_PARAM(m_max_expanded_records, int64_t, "max_expanded_records").default_val(1000000000);
@@ -94,6 +99,8 @@ class LPDDR5PIMConcreteTrace : public IFrontEnd, public Implementation {
     m_stats.add("pim_bcast_records", s_pim_bcast_records);
     m_stats.add("pim_mac_records", s_pim_mac_records);
     m_stats.add("pim_mac_ab_records", s_pim_mac_ab_records);
+    m_stats.add("read_records", s_read_records);
+    m_stats.add("write_records", s_write_records);
   }
 
   int get_num_cores() override { return 1; }
@@ -178,10 +185,33 @@ class LPDDR5PIMConcreteTrace : public IFrontEnd, public Implementation {
     }
     AddrVec_t addr_vec = require_addr_vec(node, path, line_num);
     require_provenance(node, path, line_num);
+    int64_t addr_byte = -1;
+    int64_t addr_byte_stride = 0;
+    if (node["addr_byte"]) {
+      addr_byte = node["addr_byte"].as<int64_t>();
+      if (addr_byte < 0) {
+        throw std::runtime_error(fmt::format("LPDDR5PIMConcreteTrace: {} line {} addr_byte must be non-negative", path, line_num));
+      }
+    }
+    if (node["addr_byte_stride"]) {
+      addr_byte_stride = node["addr_byte_stride"].as<int64_t>();
+      if (addr_byte_stride <= 0) {
+        throw std::runtime_error(fmt::format("LPDDR5PIMConcreteTrace: {} line {} addr_byte_stride must be positive", path, line_num));
+      }
+      if (addr_byte < 0) {
+        throw std::runtime_error(fmt::format("LPDDR5PIMConcreteTrace: {} line {} addr_byte_stride requires addr_byte", path, line_num));
+      }
+    }
 
     int request_type_id = -1;
     int command_id = -1;
-    if (opcode == "SB") {
+    if (opcode == "READ") {
+      request_type_id = Request::Type::Read;
+      s_read_records++;
+    } else if (opcode == "WRITE") {
+      request_type_id = Request::Type::Write;
+      s_write_records++;
+    } else if (opcode == "SB") {
       command_id = m_cmd_sb;
       s_sb_records++;
     } else if (opcode == "HAB") {
@@ -202,7 +232,32 @@ class LPDDR5PIMConcreteTrace : public IFrontEnd, public Implementation {
     } else {
       throw std::runtime_error(fmt::format("LPDDR5PIMConcreteTrace: {} line {} unsupported opcode '{}'", path, line_num, opcode));
     }
-    return OpcodeRecord{.opcode = opcode, .addr_vec = std::move(addr_vec), .request_type_id = request_type_id, .command_id = command_id, .repeat = repeat};
+    if (addr_byte >= 0 && opcode != "READ" && opcode != "WRITE") {
+      throw std::runtime_error(fmt::format("LPDDR5PIMConcreteTrace: {} line {} addr_byte is only valid for READ/WRITE", path, line_num));
+    }
+    if ((opcode == "READ" || opcode == "WRITE") && addr_byte < 0) {
+      throw std::runtime_error(fmt::format("LPDDR5PIMConcreteTrace: {} line {} READ/WRITE records require addr_byte", path, line_num));
+    }
+    if (opcode == "READ" || opcode == "WRITE") {
+      AddrVec_t expected_addr_vec = addr_vec_from_byte_address(addr_byte);
+      if (addr_vec != expected_addr_vec) {
+        throw std::runtime_error(fmt::format("LPDDR5PIMConcreteTrace: {} line {} READ/WRITE addr_vec must match decomposed addr_byte", path, line_num));
+      }
+      if (addr_byte_stride > 0) {
+        if (repeat - 1 > (std::numeric_limits<int64_t>::max() - addr_byte) / addr_byte_stride) {
+          throw std::runtime_error(fmt::format("LPDDR5PIMConcreteTrace: {} line {} repeated host byte address overflows int64_t", path, line_num));
+        }
+        addr_vec_from_byte_address(addr_byte + static_cast<int64_t>(repeat - 1) * addr_byte_stride);
+      }
+    }
+    return OpcodeRecord{
+        .opcode = opcode,
+        .addr_vec = std::move(addr_vec),
+        .request_type_id = request_type_id,
+        .command_id = command_id,
+        .repeat = repeat,
+        .addr_byte = addr_byte,
+        .addr_byte_stride = addr_byte_stride};
   }
 
   void validate_sequence() const {
@@ -211,6 +266,12 @@ class LPDDR5PIMConcreteTrace : public IFrontEnd, public Implementation {
     bool saw_bcast_since_hab = false;
     for (size_t i = 0; i < m_records.size(); i++) {
       const std::string& opcode = m_records[i].opcode;
+      if (opcode == "READ" || opcode == "WRITE") {
+        if (mode != Mode::SB) {
+          throw std::runtime_error(fmt::format("LPDDR5PIMConcreteTrace: record {} {} requires SB mode", i, opcode));
+        }
+        continue;
+      }
       if (opcode == "SB") {
         mode = Mode::SB;
         saw_bcast_since_hab = false;
@@ -241,14 +302,23 @@ class LPDDR5PIMConcreteTrace : public IFrontEnd, public Implementation {
 
   Request make_request(const OpcodeRecord& record) {
     Request req;
+    AddrVec_t addr_vec = record.addr_vec;
+    int64_t host_addr = -1;
+    if ((record.opcode == "READ" || record.opcode == "WRITE") && record.addr_byte >= 0) {
+      if (record.addr_byte_stride > 0 && m_curr_repeat_idx > (std::numeric_limits<int64_t>::max() - record.addr_byte) / record.addr_byte_stride) {
+        throw std::runtime_error("LPDDR5PIMConcreteTrace: repeated host byte address overflows int64_t");
+      }
+      host_addr = record.addr_byte + static_cast<int64_t>(m_curr_repeat_idx) * record.addr_byte_stride;
+      addr_vec = addr_vec_from_byte_address(host_addr);
+    }
     if (record.command_id >= 0) {
-      req = Request(record.addr_vec, Request::Cmd, record.command_id);
+      req = Request(addr_vec, Request::Cmd, record.command_id);
     } else {
-      req = Request(record.addr_vec, record.request_type_id);
+      req = Request(addr_vec, record.request_type_id);
     }
     req.source_id = 0;
     req.size_bytes = m_memory_system->get_tx_bytes();
-    req.addr = flatten_addr(record.addr_vec);
+    req.addr = host_addr >= 0 ? static_cast<Addr_t>(host_addr) : flatten_addr(addr_vec);
     req.callback = [this](Request&) {
       m_inflight_requests--;
       s_opcode_requests_completed++;
@@ -278,11 +348,45 @@ class LPDDR5PIMConcreteTrace : public IFrontEnd, public Implementation {
   }
 
   Addr_t flatten_addr(const AddrVec_t& av) const {
+    // Synthetic, deterministic flattening for trace bookkeeping. Scheduling and
+    // command legality use addr_vec directly; this is not the structured
+    // frontend's bank/row/column physical flattening model.
     Addr_t result = 0;
     for (int value : av) {
       result = result * 4096 + static_cast<Addr_t>(value + 1);
     }
     return result;
+  }
+
+  AddrVec_t addr_vec_from_byte_address(int64_t address) const {
+    if (address < 0) {
+      throw std::runtime_error("LPDDR5PIMConcreteTrace: host byte address must be non-negative");
+    }
+    AddrVec_t addr_vec(m_addr_vec_size, 0);
+    if (m_addr_vec_size == 6) {
+      // LPDDR5-PIM concrete traces use [Channel, Rank, BankGroup, Bank, Row,
+      // Column].  Keep host READ/WRITE traffic inside the configured hierarchy
+      // instead of treating each addr_vec component as a base-4096 digit; large
+      // cold-start WRITE streams can otherwise synthesize impossible bank ids.
+      int64_t value = address;
+      addr_vec[5] = static_cast<int>(value % 1024);  // Column
+      value /= 1024;
+      addr_vec[4] = static_cast<int>(value % 32768);  // Row
+      value /= 32768;
+      addr_vec[3] = static_cast<int>(value % 4);  // Bank
+      value /= 4;
+      addr_vec[2] = static_cast<int>(value % 4);  // BankGroup
+      return addr_vec;
+    }
+    int64_t value = address;
+    for (int index = m_addr_vec_size - 1; index >= 0; index--) {
+      addr_vec[index] = static_cast<int>(value % 4096);
+      value /= 4096;
+    }
+    if (value != 0) {
+      throw std::runtime_error(fmt::format("LPDDR5PIMConcreteTrace: host byte address {} does not fit in addr_vec_size {}", address, m_addr_vec_size));
+    }
+    return addr_vec;
   }
 
   static void require_present(const YAML::Node& node, const std::string& key, const std::string& path, int line_num) {
@@ -338,6 +442,7 @@ class LPDDR5PIMConcreteTrace : public IFrontEnd, public Implementation {
     require_sequence_contains(provenance["non_claims"], "not_runtime_replay", "provenance.non_claims", path, line_num);
     require_sequence_contains(provenance["non_claims"], "not_vllm_replay", "provenance.non_claims", path, line_num);
     require_sequence_contains(provenance["non_claims"], "not_raw_attacc_schema", "provenance.non_claims", path, line_num);
+    require_sequence_contains(provenance["non_claims"], "not_silicon_faithful_pim_bcast_source_or_timing", "provenance.non_claims", path, line_num);
   }
 
   static void require_sequence_contains(

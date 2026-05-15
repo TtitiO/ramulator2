@@ -43,6 +43,20 @@ LLAMA2_13B_FFN_HIDDEN_SIZE = 13824
 LLAMA2_13B_DEFAULT_PAST_LEN = 1024
 _VALID_DISTRIBUTION_POLICIES = {"broadcast", "bank_sharded", "replicated"}
 
+# Mixtral-8x7B (GQA MoE decoder)
+MIXTRAL_8X7B_NUM_LAYERS = 32
+MIXTRAL_8X7B_HIDDEN_SIZE = 4096
+MIXTRAL_8X7B_NUM_HEADS = 32
+MIXTRAL_8X7B_NUM_KV_HEADS = 8
+MIXTRAL_8X7B_HEAD_DIM = 128
+MIXTRAL_8X7B_NUM_EXPERTS = 8
+MIXTRAL_8X7B_TOP_K = 2
+MIXTRAL_8X7B_EXPERT_HIDDEN_SIZE = 14336
+MIXTRAL_8X7B_DEFAULT_PAST_LEN = 1024
+# Scaled dimensions for trace-size feasibility (same as paper manifest)
+MIXTRAL_8X7B_SCALED_HIDDEN = 512
+MIXTRAL_8X7B_SCALED_EXPERT_HIDDEN = 2048
+
 
 @dataclass(frozen=True)
 class ModelSpec:
@@ -371,6 +385,159 @@ def get_llama2_13b_dense_decoder_manifests(
     return (
         get_llama2_13b_full_depth_attention_manifest(past_len=past_len, schedule_policy=schedule_policy),
         get_llama2_13b_full_depth_ffn_manifest(schedule_policy=schedule_policy),
+    )
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# Mixtral-8x7B MoE decoder manifests  (full 32-layer, GQA attention)
+# ═══════════════════════════════════════════════════════════════════════
+
+def _mixtral_ramulator_defaults() -> dict:
+    return {
+        "bank_sequence": [0, 1, 2, 3],
+        "bank_sequence_order": "frontend",
+        "pim_banks_per_mpu": 1,
+        "burst_length": 1,
+        "row_start": 0,
+        "row_count": 16,
+        "dependency_count": 8,
+        "column_start": 0,
+    }
+
+
+def _mixtral_mapping_policy() -> dict:
+    return {
+        "host_policy": "semantic_tensor_io_only",
+        "pim_policy": "native_lpddr5_pim_operator_tiles",
+        "bank_sequence_policy": "manifest_order",
+        "mpu_grouping_policy": "manifest_pim_banks_per_mpu",
+    }
+
+
+def _mixtral_operand_movement_policy() -> dict:
+    return {
+        "weights": "preloaded_stationary",
+        "dynamic_activation_setup": "materialized",
+        "ffn_intermediate": "bank_local_capacity_controlled",
+    }
+
+
+def get_mixtral_8x7b_moe_decoder_attention_manifest(
+    *, past_len: int = MIXTRAL_8X7B_DEFAULT_PAST_LEN, schedule_policy: str = "serialized"
+) -> dict:
+    """Mixtral-8x7B GQA attention manifest for full-depth MoE decode pipeline.
+
+    Uses scaled dimensions (hidden=512, 4 heads) to keep the combined attention+MoE
+    trace manageable.  The GQA ratio (4 Q-heads per KV-head, head_dim=128) and
+    expert-to-hidden ratio are preserved.
+    """
+    scaled_hidden = MIXTRAL_8X7B_SCALED_HIDDEN           # 512
+    scaled_num_heads = scaled_hidden // MIXTRAL_8X7B_HEAD_DIM  # 4
+    scaled_num_kv_heads = max(1, scaled_num_heads // 4)        # 1 (GQA ratio preserved)
+    tile_tokens = min(256, past_len)
+    return {
+        "manifest_version": "mixtral-8x7b-attention-v0.1",
+        "manifest_name": f"mixtral_8x7b_{MIXTRAL_8X7B_NUM_LAYERS}_layer_attention_decode_scaled",
+        "provenance_class": "representative-model-scale",
+        "model_citation": "Mixtral of Experts (Jiang et al., arXiv:2401.04088)",
+        "attention_variant": "grouped_query_attention_scaled",
+        "data_movement_assumption": "semantic_kv_cache_host_read_per_tile",
+        "workload_class": "structured_transformer_attention_surrogate",
+        "phase": "decode",
+        "model_family": "Mixtral-8x7B decoder attention slice (scaled GQA)",
+        "model_total_layers": MIXTRAL_8X7B_NUM_LAYERS,
+        "num_layers": MIXTRAL_8X7B_NUM_LAYERS,
+        "num_heads": scaled_num_heads,
+        "num_kv_heads": scaled_num_kv_heads,
+        "head_dim": MIXTRAL_8X7B_HEAD_DIM,
+        "hidden_size": scaled_hidden,
+        "past_len": past_len,
+        "seq_len": 1,
+        "datatype": "int8",
+        "score_tile_tokens": tile_tokens,
+        "context_tile_tokens": tile_tokens,
+        "head_group_size": scaled_num_heads // scaled_num_kv_heads,
+        "schedule_policy": schedule_policy,
+        "operand_movement_policy": _mixtral_operand_movement_policy(),
+        "ramulator_visible_defaults": _mixtral_ramulator_defaults(),
+        "mapping_policy": _mixtral_mapping_policy(),
+        "literature_anchors": [
+            "Mixtral-8x7B (Jiang et al., 2024)",
+            "LPDDR5-PIM native opcode surface",
+        ],
+        "non_claims": _llama2_common_non_claims(),
+    }
+
+
+def get_mixtral_8x7b_moe_decoder_moe_manifest(
+    *,
+    schedule_policy: str = "serialized",
+    selected_experts: list[int] | None = None,
+) -> dict:
+    """Mixtral-8x7B MoE manifest for full-depth MoE decode pipeline.
+
+    Real dimensions (hidden=4096, expert_ffn=14336) produce ~352M PIM_MAC per
+    layer (2 active experts).  For trace-size feasibility the default manifest
+    uses scaled dimensions (hidden=512, expert_ffn=2048) that preserve the
+    per-token MAC pattern while keeping traces manageable.
+    """
+    if selected_experts is None:
+        selected_experts = [0, 1]
+    return {
+        "manifest_version": "mixtral-moe-decode-v0.1",
+        "manifest_name": f"mixtral_8x7b_{MIXTRAL_8X7B_NUM_LAYERS}_layer_moe_decode",
+        "provenance_class": "representative-model-scale",
+        "model_citation": "Mixtral of Experts (Jiang et al., arXiv:2401.04088)",
+        "real_model_dimensions": {
+            "hidden_size": MIXTRAL_8X7B_HIDDEN_SIZE,
+            "expert_hidden_size": MIXTRAL_8X7B_EXPERT_HIDDEN_SIZE,
+            "num_experts": MIXTRAL_8X7B_NUM_EXPERTS,
+            "top_k": MIXTRAL_8X7B_TOP_K,
+            "num_query_heads": MIXTRAL_8X7B_NUM_HEADS,
+            "num_kv_heads": MIXTRAL_8X7B_NUM_KV_HEADS,
+            "head_dim": MIXTRAL_8X7B_HEAD_DIM,
+        },
+        "simulation_scaling": (
+            f"hidden={MIXTRAL_8X7B_SCALED_HIDDEN}, "
+            f"expert_ffn={MIXTRAL_8X7B_SCALED_EXPERT_HIDDEN} "
+            "for trace-size feasibility; per-token MAC pattern preserved"
+        ),
+        "workload_class": "structured_transformer_moe_surrogate",
+        "phase": "decode",
+        "model_family": "Mixtral-8x7B decoder-only transformer MoE slice (8 experts, top-2)",
+        "model_total_layers": MIXTRAL_8X7B_NUM_LAYERS,
+        "num_layers": MIXTRAL_8X7B_NUM_LAYERS,
+        "seq_len": 1,
+        "hidden_size": MIXTRAL_8X7B_SCALED_HIDDEN,
+        "expert_hidden_size": MIXTRAL_8X7B_SCALED_EXPERT_HIDDEN,
+        "ffn_hidden_size": MIXTRAL_8X7B_SCALED_EXPERT_HIDDEN,  # for Q/K/V/O projection record compatibility
+        "num_experts": MIXTRAL_8X7B_NUM_EXPERTS,
+        "top_k": MIXTRAL_8X7B_TOP_K,
+        "selected_experts": selected_experts,
+        "datatype": "int8",
+        "schedule_policy": schedule_policy,
+        "operand_movement_policy": {
+            "weights": "preloaded_stationary",
+            "router_input_setup": "materialized",
+            "token_dispatch": "materialized",
+            "expert_output_combine": "materialized",
+        },
+        "ramulator_visible_defaults": _mixtral_ramulator_defaults(),
+        "mapping_policy": _mixtral_mapping_policy(),
+        "literature_anchors": [
+            "Mixtral-8x7B (Jiang et al., 2024)",
+            "LPDDR5-PIM native opcode surface",
+        ],
+        "non_claims": _llama2_common_non_claims(),
+    }
+
+
+def get_mixtral_8x7b_moe_decoder_manifests(
+    *, past_len: int = MIXTRAL_8X7B_DEFAULT_PAST_LEN, schedule_policy: str = "serialized"
+) -> tuple[dict, dict]:
+    return (
+        get_mixtral_8x7b_moe_decoder_attention_manifest(past_len=past_len, schedule_policy=schedule_policy),
+        get_mixtral_8x7b_moe_decoder_moe_manifest(schedule_policy=schedule_policy),
     )
 
 
@@ -838,6 +1005,7 @@ def _host_access_record(
     manifest: dict,
     *,
     head_index: int | None = None,
+    address_head_index: int | None = None,
     tile_index: int | None = None,
     tile_tokens: int | None = None,
     inputs: list[str],
@@ -864,6 +1032,7 @@ def _host_access_record(
         context_fields["tile_start"] = tile_start
     if tile_tokens is not None:
         context_fields["tile_tokens"] = tile_tokens
+    effective_head = address_head_index if address_head_index is not None else head_index
     record = _base_record(record_id, kind, layer_index, op, manifest)
     record.update(
         {
@@ -878,7 +1047,7 @@ def _host_access_record(
                 "lowering": "structured_replay_regular_dram_request",
                 "base_byte": _host_access_base_byte(
                     layer_index=layer_index,
-                    head_index=head_index,
+                    head_index=effective_head,
                     tile_index=tile_index,
                     address_scope=address_scope,
                     tile_start=tile_start,
@@ -1018,11 +1187,30 @@ def _ffn_data_move_record(
     record = _base_record(record_id, "PIMDataMove", layer_index, op, manifest)
     distribution_policy = manifest.get("activation_distribution_policy", "broadcast")
     movement_num_requests = _num_requests(movement_elements, manifest["datatype"]) if movement_elements > 0 else 1
+    is_weight = operand_role == "weight"
     movement_behavior_claim = (
         "semantic_movement_volume_proportional_not_tiled_or_silicon_faithful"
-        if operand_role == "weight" and movement_elements > 0
+        if is_weight and movement_elements > 0
         else "semantic_movement_not_silicon_faithful"
     )
+    lowering = "semantic_only_steady_state_or_host_write_preload" if is_weight else "native_pim_bcast_when_supported"
+    movement_policy = {
+        "movement_kind": "preloaded_stationary_weight_residency" if is_weight else "broadcast_or_accounted_tile_load",
+        "lowering_preference": lowering,
+        "operand_role": operand_role,
+        "residency": residency,
+        "materialized": True,
+        "reuse_scope": reuse_scope,
+        "lowering": lowering,
+        "tile_index": tile_index,
+        "tile_elements": tile_elements,
+        "tile_start": tile_start,
+        "distribution_scope": "bank_local_preloaded" if is_weight else distribution_policy,
+    }
+    if movement_elements > 0:
+        movement_policy["movement_elements"] = int(movement_elements)
+    if is_weight:
+        movement_policy["materialization_lowering"] = "regular_host_write_preload_when_materialized"
     record.update(
         {
             "tensor_io": {"inputs": inputs, "outputs": outputs},
@@ -1037,19 +1225,7 @@ def _ffn_data_move_record(
                 tile_start=tile_start,
             ),
             "residency": _residency(*(inputs + outputs)),
-            "movement_policy": {
-                "movement_kind": "broadcast_or_accounted_tile_load",
-                "lowering_preference": "native_pim_bcast_when_supported",
-                "operand_role": operand_role,
-                "residency": residency,
-                "materialized": True,
-                "reuse_scope": reuse_scope,
-                "lowering": "native_pim_bcast_when_supported",
-                "tile_index": tile_index,
-                "tile_elements": tile_elements,
-                "tile_start": tile_start,
-                "distribution_scope": distribution_policy,
-            },
+            "movement_policy": movement_policy,
             "num_requests": movement_num_requests,
             "datatype_metadata": {
                 "datatype": manifest["datatype"],
@@ -1080,11 +1256,26 @@ def _moe_data_move_record(
 ) -> dict:
     record = _base_record(record_id, "PIMDataMove", layer_index, op, manifest)
     movement_num_requests = _num_requests(movement_elements, manifest["datatype"]) if movement_elements > 0 else 1
+    is_weight = operand_role == "weight"
     movement_behavior_claim = (
         "semantic_movement_volume_proportional_not_tiled_or_silicon_faithful"
-        if operand_role == "weight" and movement_elements > 0
+        if is_weight and movement_elements > 0
         else "semantic_movement_not_silicon_faithful"
     )
+    lowering = "semantic_only_steady_state_or_host_write_preload" if is_weight else "native_pim_bcast_when_supported"
+    movement_policy = {
+        "movement_kind": "preloaded_stationary_weight_residency" if is_weight else "broadcast_or_accounted_tile_load",
+        "lowering_preference": lowering,
+        "operand_role": operand_role,
+        "residency": residency,
+        "materialized": True,
+        "reuse_scope": reuse_scope,
+        "lowering": lowering,
+    }
+    if movement_elements > 0:
+        movement_policy["movement_elements"] = int(movement_elements)
+    if is_weight:
+        movement_policy["materialization_lowering"] = "regular_host_write_preload_when_materialized"
     record.update(
         {
             "tensor_io": {"inputs": inputs, "outputs": outputs},
@@ -1097,15 +1288,7 @@ def _moe_data_move_record(
                 expert_id=expert_id,
             ),
             "residency": _residency(*(inputs + outputs)),
-            "movement_policy": {
-                "movement_kind": "broadcast_or_accounted_tile_load",
-                "lowering_preference": "native_pim_bcast_when_supported",
-                "operand_role": operand_role,
-                "residency": residency,
-                "materialized": True,
-                "reuse_scope": reuse_scope,
-                "lowering": "native_pim_bcast_when_supported",
-            },
+            "movement_policy": movement_policy,
             "num_requests": movement_num_requests,
             "datatype_metadata": {
                 "datatype": manifest["datatype"],
@@ -1194,6 +1377,7 @@ def _ffn_projection_record(
     inputs: list[str],
     outputs: list[str],
     dependencies: list[str],
+    projection_output_dim: int | None = None,
 ) -> dict:
     hidden_size = int(manifest["hidden_size"])
     ffn_hidden_size = int(manifest["ffn_hidden_size"])
@@ -1204,8 +1388,11 @@ def _ffn_projection_record(
     elif op == "ffn_down_projection":
         n = hidden_size
         k = ffn_hidden_size
-    elif op in {"q_projection", "k_projection", "v_projection", "o_projection"}:
+    elif op in {"q_projection", "o_projection"}:
         n = hidden_size
+        k = hidden_size
+    elif op in {"k_projection", "v_projection"}:
+        n = projection_output_dim if projection_output_dim is not None else hidden_size
         k = hidden_size
     else:
         raise ValueError(f"Unsupported projection op: {op}")
@@ -1437,6 +1624,10 @@ def _append_attention_score_records(
     head_tiles: list[tuple[int, int]],
     score_record_ids: list[str],
 ) -> int:
+    num_heads = int(manifest["num_heads"])
+    num_kv = int(manifest.get("kv_heads", manifest.get("num_kv_heads", num_heads)))
+    head_group_size = num_heads // num_kv
+    kv_head = head_index // head_group_size
     for tile_index, (tile_start, tile_tokens) in enumerate(head_tiles):
         q_tensor = f"L{layer_index}.H{head_index}.Q"
         k_tensor = f"L{layer_index}.H{head_index}.T{tile_index}.K"
@@ -1450,6 +1641,7 @@ def _append_attention_score_records(
                 "kv_cache_k_tile_read",
                 manifest,
                 head_index=head_index,
+                address_head_index=kv_head,
                 tile_index=tile_index,
                 tile_tokens=tile_tokens,
                 inputs=[k_tensor],
@@ -1494,6 +1686,10 @@ def _append_attention_softmax_context_records(
     head_tiles: list[tuple[int, int]],
     score_record_ids: list[str],
 ) -> int:
+    num_heads = int(manifest["num_heads"])
+    num_kv = int(manifest.get("kv_heads", manifest.get("num_kv_heads", num_heads)))
+    head_group_size = num_heads // num_kv
+    kv_head = head_index // head_group_size
     softmax_id = f"rec_{next_id:04d}"
     score_tensors = [f"L{layer_index}.H{head_index}.T{tile_index}.score" for tile_index, _ in enumerate(head_tiles)]
     probability_tensors = [f"L{layer_index}.H{head_index}.T{tile_index}.probability" for tile_index, _ in enumerate(head_tiles)]
@@ -1529,6 +1725,7 @@ def _append_attention_softmax_context_records(
                 "kv_cache_v_tile_read",
                 manifest,
                 head_index=head_index,
+                address_head_index=kv_head,
                 tile_index=tile_index,
                 tile_tokens=tile_tokens,
                 inputs=[v_tensor],
@@ -2120,14 +2317,166 @@ def _validate_dense_decode_v2_supported_manifests(attention_manifest: dict, ffn_
     head_dim = int(attention_manifest["head_dim"])
     hidden_size = int(attention_manifest["hidden_size"])
     num_kv_heads = int(attention_manifest.get("kv_heads", attention_manifest.get("num_kv_heads", num_heads)))
-    if num_kv_heads != num_heads:
-        raise ValueError("decode-block v2 currently supports dense MHA only; GQA/MQA num_kv_heads != num_heads is unsupported")
+    if num_kv_heads > num_heads:
+        raise ValueError("num_kv_heads must not exceed num_heads")
+    if num_kv_heads <= 0:
+        raise ValueError("num_kv_heads must be positive")
+    if num_heads % num_kv_heads != 0:
+        raise ValueError(
+            f"num_heads ({num_heads}) must be divisible by num_kv_heads ({num_kv_heads}) "
+            f"for grouped-query attention support"
+        )
     if hidden_size != num_heads * head_dim:
         raise ValueError("decode-block v2 requires hidden_size == num_heads * head_dim for dense MHA projection shapes")
     if int(ffn_manifest["hidden_size"]) != hidden_size:
         raise ValueError("Dense decoder attention/FFN manifests must use the same hidden_size")
     if attention_manifest["datatype"] != ffn_manifest["datatype"]:
         raise ValueError("Dense decoder attention/FFN manifests must use the same datatype")
+
+
+def _validate_moe_decode_v2_supported_manifests(attention_manifest: dict, moe_manifest: dict) -> None:
+    num_heads = int(attention_manifest["num_heads"])
+    head_dim = int(attention_manifest["head_dim"])
+    hidden_size = int(attention_manifest["hidden_size"])
+    num_kv_heads = int(attention_manifest.get("kv_heads", attention_manifest.get("num_kv_heads", num_heads)))
+    if num_kv_heads > num_heads:
+        raise ValueError("num_kv_heads must not exceed num_heads")
+    if num_kv_heads <= 0:
+        raise ValueError("num_kv_heads must be positive")
+    if num_heads % num_kv_heads != 0:
+        raise ValueError(
+            f"num_heads ({num_heads}) must be divisible by num_kv_heads ({num_kv_heads}) "
+            f"for grouped-query attention support"
+        )
+    if hidden_size != num_heads * head_dim:
+        raise ValueError("decode-block v2 requires hidden_size == num_heads * head_dim")
+    moe_hidden = int(moe_manifest["hidden_size"])
+    if moe_hidden != hidden_size:
+        raise ValueError(
+            f"MoE decoder attention hidden_size ({hidden_size}) and MoE hidden_size ({moe_hidden}) must match"
+        )
+    if attention_manifest["datatype"] != moe_manifest["datatype"]:
+        raise ValueError("MoE decoder attention/MoE manifests must use the same datatype")
+
+
+def generate_moe_transformer_layer_records(
+    *, attention_manifest: dict, moe_manifest: dict
+) -> list[dict]:
+    """Generate a full-depth MoE decoder trace: attention + MoE per layer.
+
+    For every layer the pipeline emits Q/K/V/O projections, KV-cache writes,
+    tiled attention (score / softmax / context), and a complete MoE block
+    (router -> top-k -> dispatch -> selected expert FFNs -> combine).
+
+    The attention manifest drives the GQA-aware attention side; the MoE
+    manifest drives the router and per-expert compute.  Both must agree on
+    ``hidden_size``, ``datatype``, and ``num_layers``.
+    """
+    _validate_moe_decode_v2_supported_manifests(attention_manifest, moe_manifest)
+    combined: list[dict] = []
+    next_id = 0
+    num_layers = int(attention_manifest["num_layers"])
+    if int(moe_manifest["num_layers"]) != num_layers:
+        raise ValueError("MoE decoder attention/MoE manifests must use the same num_layers")
+
+    one_attention = _one_layer_manifest(attention_manifest)
+    one_moe = _one_layer_manifest(moe_manifest)
+    num_kv = int(one_attention.get("kv_heads", one_attention.get("num_kv_heads", one_attention.get("num_heads"))))
+    hd = int(one_attention["head_dim"])
+
+    for layer_index in range(num_layers):
+        layer_start, next_id = _renumber_records(
+            [_barrier_record("rec_0000", layer_index, attention_manifest, op="layer_start")], next_id
+        )
+        combined.extend(layer_start)
+
+        qkv, next_id = _renumber_records(
+            _generate_decode_v2_qkvo_projection_records(one_moe, num_kv_heads=num_kv, head_dim=hd), next_id
+        )
+        qkv = [_retarget_layer_zero_record(record, layer_index) for record in qkv]
+        q_id = [record for record in qkv if record["op"] == "q_projection"][0]["record_id"]
+        k_id = [record for record in qkv if record["op"] == "k_projection"][0]["record_id"]
+        v_id = [record for record in qkv if record["op"] == "v_projection"][0]["record_id"]
+        combined.extend(qkv)
+
+        kv_writes, next_id = _renumber_records(
+            _generate_decode_v2_kv_cache_write_records(one_attention), next_id
+        )
+        kv_writes = [_retarget_layer_zero_record(record, layer_index) for record in kv_writes]
+        for record in kv_writes:
+            if record["op"] == "kv_cache_k_append":
+                record["logical_dependencies"] = [k_id]
+            elif record["op"] == "kv_cache_v_append":
+                record["logical_dependencies"] = [v_id]
+        k_append_id = [record for record in kv_writes if record["op"] == "kv_cache_k_append"][0]["record_id"]
+        v_append_id = [record for record in kv_writes if record["op"] == "kv_cache_v_append"][0]["record_id"]
+        combined.extend(kv_writes)
+
+        attention, next_id = _renumber_records(generate_attention_records(one_attention), next_id)
+        attention = [_retarget_layer_zero_record(record, layer_index) for record in attention]
+        for record in attention:
+            if record["kind"] == "AttentionScore":
+                record["tensor_io"]["inputs"][0] = f"L{layer_index}.Q"
+                record["logical_dependencies"] = [q_id, *record["logical_dependencies"]]
+            elif record["op"] == "kv_cache_k_tile_read":
+                record["logical_dependencies"] = [k_append_id]
+            elif record["op"] == "kv_cache_v_tile_read":
+                record["logical_dependencies"] = [v_append_id, *record["logical_dependencies"]]
+        terminal_attention_ids = [
+            record["record_id"]
+            for record in attention
+            if record["kind"] == "PIMElementwise" and record["op"] == "attention_context_reduction_accounting"
+        ] or [record["record_id"] for record in attention if record["kind"] == "AttentionContext"]
+        terminal_attention_tensors = [
+            output
+            for record in attention
+            if record["record_id"] in terminal_attention_ids
+            for output in record.get("tensor_io", {}).get("outputs", [])
+        ]
+        combined.extend(attention)
+
+        output_projection, next_id = _renumber_records(
+            _generate_decode_v2_output_projection_records(one_moe), next_id
+        )
+        output_projection = [_retarget_layer_zero_record(record, layer_index) for record in output_projection]
+        output_projection[0]["tensor_io"]["inputs"] = terminal_attention_tensors + [f"L{layer_index}.o_projection.weight.resident"]
+        output_projection[0]["logical_dependencies"] = terminal_attention_ids
+        o_id = output_projection[0]["record_id"]
+        combined.extend(output_projection)
+
+        # MoE block: router → top-k → dispatch → selected expert FFNs → combine
+        moe, next_id = _renumber_records(generate_moe_records(one_moe), next_id)
+        moe = [_retarget_layer_zero_record(record, layer_index) for record in moe]
+        for record in moe:
+            if record.get("op") == "moe_router_input_setup":
+                record["tensor_io"]["inputs"] = [f"L{layer_index}.attention_output"]
+                record["logical_dependencies"] = [o_id]
+        combined.extend(moe)
+
+        barrier, next_id = _renumber_records(
+            [_barrier_record("rec_0000", layer_index, attention_manifest)], next_id
+        )
+        combined.extend(barrier)
+
+    drain, next_id = _renumber_records(
+        [_drain_record("rec_0000", max(0, num_layers - 1), attention_manifest)], next_id
+    )
+    combined.extend(drain)
+    for record in combined:
+        validate_record(record)
+    return combined
+
+
+def generate_mixtral_8x7b_decoder_records(
+    *, attention_manifest: dict | None = None, moe_manifest: dict | None = None
+) -> list[dict]:
+    if attention_manifest is None or moe_manifest is None:
+        default_attention, default_moe = get_mixtral_8x7b_moe_decoder_manifests()
+        attention_manifest = default_attention if attention_manifest is None else attention_manifest
+        moe_manifest = default_moe if moe_manifest is None else moe_manifest
+    return generate_moe_transformer_layer_records(
+        attention_manifest=attention_manifest, moe_manifest=moe_manifest
+    )
 
 
 def generate_full_transformer_layer_records(
@@ -2151,14 +2500,21 @@ def generate_full_transformer_layer_records(
     return combined
 
 
-def _generate_decode_v2_qkvo_projection_records(manifest: dict) -> list[dict]:
+def _generate_decode_v2_qkvo_projection_records(
+    manifest: dict,
+    *,
+    num_kv_heads: int | None = None,
+    head_dim: int | None = None,
+) -> list[dict]:
     records: list[dict] = []
     next_id = 0
+    kv_output_dim = (num_kv_heads * head_dim) if (num_kv_heads is not None and head_dim is not None) else None
     for layer_index in range(int(manifest["num_layers"])):
         hidden = f"L{layer_index}.hidden"
         for stage_index, op in enumerate(["q_projection", "k_projection", "v_projection"]):
             output = f"L{layer_index}.{op.removesuffix('_projection').upper()}"
             weight = f"L{layer_index}.{op}.weight.resident"
+            proj_dim = kv_output_dim if op in {"k_projection", "v_projection"} else None
             records.append(
                 _ffn_projection_record(
                     f"rec_{next_id:04d}",
@@ -2169,6 +2525,7 @@ def _generate_decode_v2_qkvo_projection_records(manifest: dict) -> list[dict]:
                     inputs=[hidden, weight],
                     outputs=[output],
                     dependencies=[],
+                    projection_output_dim=proj_dim,
                 )
             )
             next_id += 1
@@ -2203,6 +2560,9 @@ def _generate_decode_v2_kv_cache_write_records(manifest: dict) -> list[dict]:
     records: list[dict] = []
     next_id = 0
     hidden_size = int(manifest["hidden_size"])
+    num_kv = int(manifest.get("kv_heads", manifest.get("num_kv_heads", manifest.get("num_heads", 1))))
+    hd = int(manifest.get("head_dim", hidden_size // max(1, num_kv)))
+    kv_byte_elements = num_kv * hd
     for layer_index in range(int(manifest["num_layers"])):
         for op, tensor in [("kv_cache_k_append", "K"), ("kv_cache_v_append", "V")]:
             records.append(
@@ -2215,7 +2575,7 @@ def _generate_decode_v2_kv_cache_write_records(manifest: dict) -> list[dict]:
                     inputs=[f"L{layer_index}.{tensor}"],
                     outputs=[f"L{layer_index}.kv_cache.{tensor}.current_token"],
                     dependencies=[],
-                    byte_elements=hidden_size,
+                    byte_elements=kv_byte_elements,
                     address_scope=op,
                 )
             )
@@ -2248,11 +2608,13 @@ def generate_dense_transformer_layer_records(*, attention_manifest: dict, ffn_ma
 
     one_attention = _one_layer_manifest(attention_manifest)
     one_ffn = _one_layer_manifest(ffn_manifest)
+    num_kv = int(one_attention.get("kv_heads", one_attention.get("num_kv_heads", one_attention.get("num_heads"))))
+    hd = int(one_attention["head_dim"])
     for layer_index in range(num_layers):
         layer_start, next_id = _renumber_records([_barrier_record("rec_0000", layer_index, attention_manifest, op="layer_start")], next_id)
         combined.extend(layer_start)
 
-        qkv, next_id = _renumber_records(_generate_decode_v2_qkvo_projection_records(one_ffn), next_id)
+        qkv, next_id = _renumber_records(_generate_decode_v2_qkvo_projection_records(one_ffn, num_kv_heads=num_kv, head_dim=hd), next_id)
         qkv = [_retarget_layer_zero_record(record, layer_index) for record in qkv]
         q_id = [record for record in qkv if record["op"] == "q_projection"][0]["record_id"]
         k_id = [record for record in qkv if record["op"] == "k_projection"][0]["record_id"]

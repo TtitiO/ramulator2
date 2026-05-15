@@ -76,11 +76,10 @@ def _attn_base(
         "provenance_class": "representative-model-scale",
         "model_citation": model_citation,
         "model_total_layers": model_total_layers,
-        "data_movement_assumption": "activation_tiling_kv_broadcast_per_tile",
+        "data_movement_assumption": "semantic_kv_cache_host_read_per_tile",
         "data_movement_note": (
-            "Attention models explicit K/V tile loads as PIMDataMove → HAB/PIM_BCAST "
-            "because decode attention requires streaming KV-cache tiles per head/tile step. "
-            "SB/HAB mode transitions are counted per tile pair and represent real data-movement overhead."
+            "Decode-block v2 models ordinary K/V-cache tile access as HostRead semantic accounting, "
+            "not PIMDataMove/PIM_BCAST. PIM_BCAST is reserved for true PIM-local setup/broadcast."
         ),
         "workload_class": "structured_transformer_attention_surrogate",
         "phase": "decode",

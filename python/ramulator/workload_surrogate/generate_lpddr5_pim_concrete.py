@@ -9,9 +9,10 @@ from pathlib import Path
 from ramulator.workload_surrogate.lpddr5_pim_concrete_trace import (
     CONCRETE_GENERATOR_VERSION,
     CONCRETE_SCHEMA_VERSION,
+    DEFAULT_NON_CLAIMS,
     MAX_REPEAT,
     REQUIRED_BOUNDARY_CLAIMS,
-    REQUIRED_NON_CLAIMS,
+    addr_vec_from_byte_address,
     concrete_provenance,
     expanded_record_count,
     validate_sequence,
@@ -25,6 +26,7 @@ DEFAULT_SEMANTIC_OUTPUT_DIR = Path("ramulator2/tests/data/lpddr5_pim_concrete_op
 PER_BANK_COMPUTE_SEMANTIC_KINDS = {"PIMCompute", "AttentionScore", "AttentionContext", "FFNProjection", "MoERouter", "MoEExpertFFN"}
 ALL_BANK_LOAD_SEMANTIC_KINDS = {"PIMLoadAll", "PIMDataMove"}
 ALL_BANK_COMPUTE_SEMANTIC_KINDS = {"PIMComputeAll"}
+HOST_SEMANTIC_KINDS = {"HostRead", "HostWrite"}
 
 
 def _split_repeat(repeat: int, max_repeat: int = MAX_REPEAT) -> list[int]:
@@ -49,8 +51,9 @@ def _record(
     repeat: int = 1,
     notes: str = "",
     provenance: dict | None = None,
+    extra_fields: dict | None = None,
 ) -> dict:
-    return {
+    record = {
         "schema_version": CONCRETE_SCHEMA_VERSION,
         "record_id": record_id,
         "opcode": opcode,
@@ -59,6 +62,9 @@ def _record(
         "provenance": concrete_provenance() if provenance is None else provenance,
         "notes": notes,
     }
+    if extra_fields:
+        record.update(extra_fields)
+    return record
 
 
 def load_semantic_records(trace_path: Path | str) -> list[dict]:
@@ -86,7 +92,11 @@ def _semantic_provenance(record: dict, *, manifest_name: str) -> dict:
             "tuple_manifest": semantic_provenance.get("tuple_manifest"),
             "mapping_policy": dict(record.get("mapping_policy", {})),
         },
-        "notes": "lowered from Phase 2 semantic workload-surrogate record; native LPDDR5-PIM concrete opcode replay only",
+        "notes": (
+            "lowered from Phase 2 semantic workload-surrogate record; native LPDDR5-PIM concrete "
+            "opcode replay only; PIM_BCAST remains a bounded all-bank setup abstraction, not a "
+            "silicon-faithful source/timing claim"
+        ),
     }
 
 
@@ -111,6 +121,10 @@ def _addr_vec_from_semantic(
     if bank_positions is not None and bank_counts is not None:
         if len(bank_positions) != len(bank_counts) or not bank_positions:
             raise ValueError("bank_positions and bank_counts must be non-empty lists of equal length")
+        if len(set(bank_positions)) != len(bank_positions):
+            raise ValueError("bank_positions entries must be unique")
+        if row_level in bank_positions or col_level in bank_positions:
+            raise ValueError("bank_positions must not overlap row_level or col_level")
         for level in bank_positions:
             if level < 0 or level >= addr_vec_size:
                 raise ValueError("bank_positions entries must fit within addr_vec_size")
@@ -146,6 +160,8 @@ def _addr_vec_from_semantic(
         if not bank_sequence:
             raise ValueError(f"Semantic record {record.get('record_id')} {kind} missing bank_sequence")
         flat_bank = int(bank_sequence[phase % len(bank_sequence)])
+        if flat_bank < 0:
+            raise ValueError(f"Semantic record {record.get('record_id')} bank_sequence entries must be non-negative")
         if bank_positions is not None and bank_counts is not None:
             _decompose_flat_bank(
                 flat_bank,
@@ -162,6 +178,56 @@ def _addr_vec_from_semantic(
     return av
 
 
+def _addr_vec_from_byte_address(address: int, *, addr_vec_size: int) -> list[int]:
+    return addr_vec_from_byte_address(address, addr_vec_size=addr_vec_size)
+
+
+def _semantic_datatype_bytes(record: dict) -> int:
+    datatype = dict(record.get("datatype_metadata", {})).get("datatype")
+    if datatype is None:
+        datatype = dict(record.get("compute_shape", {})).get("datatype", "int8")
+    return 1 if datatype == "int8" else 2
+
+
+def _pim_data_move_tx_bytes(record: dict) -> int:
+    tx_bytes = int(dict(record.get("movement_policy", {})).get("materialization_tx_bytes", 64))
+    if tx_bytes <= 0:
+        raise ValueError(f"Semantic record {record.get('record_id')} materialization_tx_bytes must be positive")
+    return tx_bytes
+
+
+def _pim_data_move_materialization_bytes(record: dict) -> int:
+    movement_policy = dict(record.get("movement_policy", {}))
+    movement_elements = int(movement_policy.get("movement_elements", 0))
+    if movement_elements <= 0:
+        raise ValueError(f"Semantic record {record.get('record_id')} weight materialization missing positive movement_elements")
+    return max(1, movement_elements * _semantic_datatype_bytes(record))
+
+
+def _context_int(record: dict, field: str, default: int = 0) -> int:
+    value = dict(record.get("operator_context", {})).get(field, default)
+    if value is None:
+        return default
+    return int(value)
+
+
+def _pim_data_move_materialization_base_byte(record: dict, *, tx_bytes: int) -> int:
+    """Derive a deterministic host byte range for synthetic cold-start preloads."""
+    context = dict(record.get("operator_context", {}))
+    if "layer_id" in context:
+        layer_index = int(context["layer_id"])
+    else:
+        layer_index = int(str(record.get("layer", "layer_00")).split("_")[-1])
+    stage_index = _context_int(record, "stage_index", 0)
+    tile_index = _context_int(record, "tile_id", 0)
+    expert_value = context.get("expert_id")
+    expert_index = 999 if expert_value is None else int(expert_value)
+    op = str(record.get("op", ""))
+    op_offset = sum((index + 1) * ord(char) for index, char in enumerate(op)) % 1000
+    request_index = 1_000_000_000 + layer_index * 1_000_000 + stage_index * 100_000 + expert_index * 1_000 + tile_index * 10 + op_offset
+    return request_index * tx_bytes
+
+
 def _decompose_flat_bank(
     flat_bank: int,
     addr_vec: list[int],
@@ -170,6 +236,11 @@ def _decompose_flat_bank(
     bank_counts: list[int],
     controller_order: bool,
 ) -> None:
+    total_banks = 1
+    for count in bank_counts:
+        total_banks *= int(count)
+    if flat_bank < 0 or flat_bank >= total_banks:
+        raise ValueError(f"flat bank index {flat_bank} must be in [0, {total_banks})")
     order = list(range(len(bank_positions)))
     if controller_order:
         order.sort(key=lambda index: bank_positions[index])
@@ -190,26 +261,36 @@ def lower_semantic_records_to_concrete(
     manifest_name: str = "phase2_semantic_lowered_manifest",
     materialize_weights: bool = False,
 ) -> list[dict]:
-    """Lower Phase 2 semantic PIM records into native LPDDR5-PIM concrete opcodes.
+    """Lower Phase 2 semantic records into native LPDDR5-PIM concrete opcodes.
 
-    This is an offline compiler stage. HostRead/HostWrite remain semantic-only and
-    are intentionally not replayed by the backend-specific concrete opcode frontend.
-    Barrier/Drain become provenance/order annotations only; concrete ordering is
-    expressed by legal LPDDR5-PIM mode/control opcodes.  Phase 4 semantic-only
-    accounting stages such as AttentionSoftmax, PIMElementwise, TopK, dispatch,
-    and combine intentionally do not lower to fake hardware commands.
+    This is an offline compiler stage. HostRead/HostWrite lower to concrete READ
+    and WRITE requests. Barrier/Drain become provenance/order annotations only;
+    concrete ordering is expressed by legal host requests and LPDDR5-PIM
+    mode/control opcodes. Phase 4 semantic-only accounting stages such as
+    AttentionSoftmax, PIMElementwise, TopK, dispatch, and combine intentionally do
+    not lower to fake hardware commands.
 
     By default, weight PIMDataMove records (operand_role="weight") are NOT lowered
     to concrete opcodes (weights are resident/preloaded_stationary in steady-state
     inference).  Pass materialize_weights=True for cold-start preload or frontend
-    stress-test replay.
+    stress-test replay; materialized weights lower to regular concrete WRITE
+    records, not PIM_BCAST, because PIM_BCAST is reserved for common all-bank
+    setup/broadcast payloads rather than per-bank resident weight preload.
     """
     records: list[dict] = []
     next_id = 0
     mode = "SB"
     all_bank_load_ready = False
 
-    def append(opcode: str, semantic_record: dict, addr_vec: list[int], *, repeat: int = 1, notes: str = "") -> None:
+    def append(
+        opcode: str,
+        semantic_record: dict,
+        addr_vec: list[int],
+        *,
+        repeat: int = 1,
+        notes: str = "",
+        extra_fields: dict | None = None,
+    ) -> None:
         nonlocal next_id
         records.append(
             _record(
@@ -219,19 +300,101 @@ def lower_semantic_records_to_concrete(
                 repeat=repeat,
                 notes=notes,
                 provenance=_semantic_provenance(semantic_record, manifest_name=manifest_name),
+                extra_fields=extra_fields,
             )
         )
         next_id += 1
 
     for semantic in semantic_records:
         kind = semantic.get("kind")
-        if kind not in PER_BANK_COMPUTE_SEMANTIC_KINDS | ALL_BANK_LOAD_SEMANTIC_KINDS | ALL_BANK_COMPUTE_SEMANTIC_KINDS:
+        if kind not in HOST_SEMANTIC_KINDS | PER_BANK_COMPUTE_SEMANTIC_KINDS | ALL_BANK_LOAD_SEMANTIC_KINDS | ALL_BANK_COMPUTE_SEMANTIC_KINDS:
+            continue
+        if semantic.get("accounting_only"):
+            continue
+        if kind in HOST_SEMANTIC_KINDS:
+            if mode != "SB":
+                append("SB", semantic, [0] * addr_vec_size, notes=f"return to single-bank mode before semantic {kind} lowering")
+                mode = "SB"
+                all_bank_load_ready = False
+            address_policy = dict(semantic.get("address_policy", {}))
+            missing_policy = sorted({"base_byte", "stride_bytes", "count"} - set(address_policy))
+            if missing_policy:
+                raise ValueError(f"Semantic record {semantic.get('record_id')} address_policy missing required fields: {missing_policy}")
+            base_byte = int(address_policy.get("base_byte", 0))
+            stride_bytes = int(address_policy.get("stride_bytes", 0))
+            count = int(address_policy.get("count", 0))
+            semantic_repeat = int(semantic.get("repeat", 1))
+            if base_byte < 0:
+                raise ValueError(f"Semantic record {semantic.get('record_id')} base_byte must be non-negative")
+            if stride_bytes <= 0:
+                raise ValueError(f"Semantic record {semantic.get('record_id')} stride_bytes must be positive")
+            if count <= 0:
+                raise ValueError(f"Semantic record {semantic.get('record_id')} address_policy.count must be positive")
+            if semantic_repeat <= 0:
+                raise ValueError(f"Semantic record {semantic.get('record_id')} repeat must be positive")
+            opcode = "WRITE" if kind == "HostWrite" else "READ"
+            for repeat_index in range(semantic_repeat):
+                remaining = count
+                chunk_start = 0
+                split_index = 0
+                while remaining > 0:
+                    repeat_chunk = min(MAX_REPEAT, remaining)
+                    chunk_base_byte = base_byte + chunk_start * stride_bytes
+                    av = _addr_vec_from_byte_address(chunk_base_byte, addr_vec_size=addr_vec_size)
+                    extra_fields = {"addr_byte": chunk_base_byte}
+                    if repeat_chunk > 1:
+                        extra_fields["addr_byte_stride"] = stride_bytes
+                    notes = (
+                        f"semantic {kind} lowered to concrete {opcode}"
+                        if semantic_repeat == 1 and count <= MAX_REPEAT
+                        else f"semantic {kind} lowered to concrete {opcode} repeat {repeat_index + 1}/{semantic_repeat} split {split_index + 1}"
+                    )
+                    append(opcode, semantic, av, repeat=repeat_chunk, notes=notes, extra_fields=extra_fields)
+                    remaining -= repeat_chunk
+                    chunk_start += repeat_chunk
+                    split_index += 1
             continue
         # Weight records: skip lowering in steady-state inference (weights are resident).
-        # Use materialize_weights=True for cold-start preload or frontend stress testing.
-        if kind == "PIMDataMove" and not materialize_weights:
-            operand_role = dict(semantic.get("movement_policy", {})).get("operand_role")
+        # Use materialize_weights=True for cold-start preload or frontend stress testing;
+        # weights materialize through ordinary host WRITE traffic, not all-bank PIM_BCAST.
+        if kind == "PIMDataMove":
+            movement_policy = dict(semantic.get("movement_policy", {}))
+            operand_role = movement_policy.get("operand_role")
             if operand_role == "weight":
+                if not materialize_weights:
+                    continue
+                if mode != "SB":
+                    append("SB", semantic, [0] * addr_vec_size, notes="return to single-bank mode before host WRITE weight preload")
+                    mode = "SB"
+                    all_bank_load_ready = False
+                total_bytes = _pim_data_move_materialization_bytes(semantic)
+                tx_bytes = _pim_data_move_tx_bytes(semantic)
+                count = max(1, (total_bytes + tx_bytes - 1) // tx_bytes)
+                semantic_repeat = int(semantic.get("repeat", 1))
+                if semantic_repeat <= 0:
+                    raise ValueError(f"Semantic record {semantic.get('record_id')} repeat must be positive")
+                base_byte = _pim_data_move_materialization_base_byte(semantic, tx_bytes=tx_bytes)
+                for repeat_index in range(semantic_repeat):
+                    remaining = count
+                    chunk_start = 0
+                    split_index = 0
+                    while remaining > 0:
+                        repeat_chunk = min(MAX_REPEAT, remaining)
+                        chunk_base_byte = base_byte + (repeat_index * count + chunk_start) * tx_bytes
+                        av = _addr_vec_from_byte_address(chunk_base_byte, addr_vec_size=addr_vec_size)
+                        extra_fields = {"addr_byte": chunk_base_byte}
+                        if repeat_chunk > 1:
+                            extra_fields["addr_byte_stride"] = tx_bytes
+                        notes = (
+                            "semantic PIMDataMove weight residency materialized as concrete WRITE preload"
+                            if semantic_repeat == 1 and count <= MAX_REPEAT
+                            else "semantic PIMDataMove weight residency materialized as concrete WRITE preload "
+                            f"repeat {repeat_index + 1}/{semantic_repeat} split {split_index + 1}"
+                        )
+                        append("WRITE", semantic, av, repeat=repeat_chunk, notes=notes, extra_fields=extra_fields)
+                        remaining -= repeat_chunk
+                        chunk_start += repeat_chunk
+                        split_index += 1
                 continue
         num_requests = int(semantic.get("num_requests", 0))
         if num_requests <= 0:
@@ -395,7 +558,7 @@ def build_provenance_summary(records: list[dict]) -> dict:
         "total_logical_records": len(records),
         "total_expanded_records": expanded_record_count(records),
         "claim_boundary": list(REQUIRED_BOUNDARY_CLAIMS),
-        "non_claims": list(REQUIRED_NON_CLAIMS),
+        "non_claims": list(DEFAULT_NON_CLAIMS),
         "semantic_sources": [
             record["provenance"].get("semantic_source")
             for record in records

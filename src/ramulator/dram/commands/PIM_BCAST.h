@@ -9,6 +9,9 @@ namespace Ramulator::Cmd {
 
 template <class T>
 struct PIM_BCAST {
+  // Bounded backend abstraction: public Samsung-style PIM sources describe the
+  // corresponding setup/load as HAB/all-bank WR-like broadcast behavior, not a
+  // literal LPDDR5 command named PIM_BCAST with vendor-calibrated timing.
   static constexpr DRAMCommandMeta meta = {.is_accessing = true};
   static constexpr BankTarget bank_target = BankTarget::All;
 

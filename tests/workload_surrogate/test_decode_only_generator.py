@@ -39,6 +39,24 @@ def test_decode_only_manifest_matches_frozen_contract():
     assert manifest["scaffolding_notes"]["deterministic_mvp_scaffolding"] is True
 
 
+def test_decode_only_generator_is_marked_legacy_deprecated_mvp():
+    manifest = get_decode_only_manifest()
+
+    assert generator_mod.DECODE_ONLY_GENERATOR_STATUS == "legacy_deprecated_p2_mvp"
+    assert manifest["lifecycle_status"] == "legacy_deprecated_p2_mvp"
+    assert "does_not_implement_paper_algorithm" in manifest["non_claims"]
+    assert "paper/algorithms/llama2_decode_trace_algorithm.tex" in generator_mod.__doc__
+
+
+def test_decode_only_provenance_summary_reports_deprecation_status(tmp_path: Path):
+    _, summary_path = generate_decode_only_artifacts(tmp_path)
+    summary = json.loads(summary_path.read_text(encoding="utf-8"))
+
+    assert summary["lifecycle_status"] == "legacy_deprecated_p2_mvp"
+    assert summary["replacement_generator"] == "ramulator.workload_surrogate.generate_full_transformer.generate_llama2_7b_dense_decoder_records"
+    assert "paper/algorithms/llama2_decode_trace_algorithm.tex" in summary["deprecation_note"]
+
+
 def test_kv_cache_reads_are_host_support_not_pim_compute():
     manifest = get_decode_only_manifest()
     pim_ops = set(manifest["pim_compute_operator_classes"])

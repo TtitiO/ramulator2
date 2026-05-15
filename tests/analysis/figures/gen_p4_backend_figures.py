@@ -294,6 +294,62 @@ def gen_figure_9_stall_breakdown(output_dir: Path, *, use_tiny: bool = False) ->
     gen_stall_summary_or_figure(_paper_table_dir(output_dir), stats)
 
 
+def gen_figure_10_llama2_7b_backend(output_dir: Path) -> None:
+    from tests.analysis.figures.p4_backend_data import (
+        collect_all_backend_stats_llama2_7b,
+    )
+
+    stats = collect_all_backend_stats_llama2_7b()
+    names = [
+        "llama2_7b_32_layer_steady_state",
+        "llama2_7b_32_layer_cold_start",
+    ]
+    labels = ["Steady\nstate", "Cold\nstart"]
+    colors = ["#0072B2", "#D55E00"]
+
+    pim_macs = [stats[n]["pim_mac_issued"] for n in names]
+    cycles = [stats[n]["cycles"] for n in names]
+    latencies = [stats[n]["avg_pim_latency_cycles"] for n in names]
+
+    fig, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=(13.5, 4.2))
+
+    # Panel A: PIM_MAC issued count
+    bars1 = ax1.bar(labels, pim_macs, color=colors, edgecolor="white",
+                    linewidth=0.5, alpha=0.85)
+    ax1.set_ylabel("PIM_MAC issued", fontweight="bold")
+    ax1.set_title("Panel A: PIM_MAC issued", fontsize=10)
+    for bar, val in zip(bars1, pim_macs):
+        ax1.text(bar.get_x() + bar.get_width() / 2, bar.get_height() * 1.01,
+                 f"{int(val):,}", ha="center", va="bottom", fontsize=8)
+    ax1.spines["top"].set_visible(False)
+    ax1.spines["right"].set_visible(False)
+
+    # Panel B: total simulation cycles
+    bars2 = ax2.bar(labels, cycles, color=colors, edgecolor="white",
+                    linewidth=0.5, alpha=0.85)
+    ax2.set_ylabel("Total simulation cycles", fontweight="bold")
+    ax2.set_title("Panel B: Cycles", fontsize=10)
+    for bar, val in zip(bars2, cycles):
+        ax2.text(bar.get_x() + bar.get_width() / 2, bar.get_height() * 1.01,
+                 f"{int(val):,}", ha="center", va="bottom", fontsize=8)
+    ax2.spines["top"].set_visible(False)
+    ax2.spines["right"].set_visible(False)
+
+    # Panel C: average PIM latency
+    bars3 = ax3.bar(labels, latencies, color=colors, edgecolor="white",
+                    linewidth=0.5, alpha=0.85)
+    ax3.set_ylabel("Average PIM latency (cycles)", fontweight="bold")
+    ax3.set_title("Panel C: Average PIM latency", fontsize=10)
+    for bar, val in zip(bars3, latencies):
+        ax3.text(bar.get_x() + bar.get_width() / 2, bar.get_height() * 1.01,
+                 f"{float(val):.1f}", ha="center", va="bottom", fontsize=8)
+    ax3.spines["top"].set_visible(False)
+    ax3.spines["right"].set_visible(False)
+
+    fig.tight_layout()
+    _save(fig, output_dir, "fig10_llama2_7b_backend_comparison")
+
+
 # ───────────────────────────────────────────────────────────────────────
 # Main
 # ───────────────────────────────────────────────────────────────────────
@@ -313,6 +369,11 @@ def main() -> int:
         "--tiny",
         action="store_true",
         help="Use tiny/test manifests instead of paper-scale model configurations",
+    )
+    parser.add_argument(
+        "--skip-llama2",
+        action="store_true",
+        help="Skip Llama2-7B 32-layer backend simulation (very slow)",
     )
     opts = parser.parse_args()
 
@@ -338,6 +399,13 @@ def main() -> int:
     print("Generating stall breakdown or summary...")
     gen_figure_9_stall_breakdown(opts.output_dir, use_tiny=opts.tiny)
     print("  OK")
+
+    if not opts.skip_llama2:
+        print("Generating Llama2-7B backend comparison...")
+        gen_figure_10_llama2_7b_backend(opts.output_dir)
+        print("  OK")
+    else:
+        print("  Skipped (--skip-llama2)")
 
     print(f"\nAll backend figures written to {opts.output_dir.resolve()}")
     return 0

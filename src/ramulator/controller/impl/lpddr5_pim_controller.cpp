@@ -834,6 +834,9 @@ void LPDDR5PIMController::handle_mode_or_bcast_completion(Request& req) {
   } else if (req.command == m_cmd_hab_pim) {
     m_pim_rank_mode = PIMRankMode::PIMAllBank;
   } else if (req.command == m_cmd_pim_bcast) {
+    // Bounded sequencing token: PIM_BCAST represents a completed all-bank
+    // setup/broadcast in this backend, not a silicon-faithful proof of a
+    // distinct LPDDR5 command or exact payload-source/timing path.
     m_pim_all_bank_load_ready = true;
   }
 }

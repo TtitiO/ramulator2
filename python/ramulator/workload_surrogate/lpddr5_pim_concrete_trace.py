@@ -13,9 +13,9 @@ from pathlib import Path
 
 CONCRETE_SCHEMA_VERSION = "lpddr5-pim-opcode-v0.1"
 CONCRETE_GENERATOR_VERSION = "lpddr5-pim-opcode-generator-v0.1"
-CONCRETE_OPCODES = {"SB", "HAB", "HAB_PIM", "PIM_BCAST", "PIM_MAC", "PIM_MAC_AB"}
+CONCRETE_OPCODES = {"READ", "WRITE", "SB", "HAB", "HAB_PIM", "PIM_BCAST", "PIM_MAC", "PIM_MAC_AB"}
 MODE_OPCODES = {"SB", "HAB", "HAB_PIM"}
-REQUEST_OPCODES = {"PIM_BCAST", "PIM_MAC", "PIM_MAC_AB"}
+REQUEST_OPCODES = {"READ", "WRITE", "PIM_BCAST", "PIM_MAC", "PIM_MAC_AB"}
 MAX_REPEAT = 1_000_000
 MAX_EXPANDED_RECORDS = 1_000_000_000
 FORBIDDEN_RAW_ATTACC_OPCODES = {
@@ -39,6 +39,8 @@ REQUIRED_NON_CLAIMS = [
     "not_vllm_replay",
     "not_raw_attacc_schema",
 ]
+PIM_BCAST_BOUNDARY_NON_CLAIM = "not_silicon_faithful_pim_bcast_source_or_timing"
+DEFAULT_NON_CLAIMS = [*REQUIRED_NON_CLAIMS, PIM_BCAST_BOUNDARY_NON_CLAIM]
 
 
 def stable_json_dumps(data: object) -> str:
@@ -49,14 +51,48 @@ def stable_json_pretty(data: object) -> str:
     return json.dumps(data, indent=2, sort_keys=True) + "\n"
 
 
+def addr_vec_from_byte_address(address: int, *, addr_vec_size: int) -> list[int]:
+    if addr_vec_size <= 0:
+        raise ValueError("addr_vec_size must be positive")
+    if address < 0:
+        raise ValueError("host byte address must be non-negative")
+    if addr_vec_size == 6:
+        # LPDDR5-PIM concrete traces use [Channel, Rank, BankGroup, Bank, Row,
+        # Column].  Keep host READ/WRITE traffic inside the configured hierarchy
+        # instead of treating each addr_vec component as a base-4096 digit; the
+        # latter can synthesize impossible bank ids for large cold-start WRITE
+        # streams and crash native backend indexing before validation can fire.
+        value = int(address)
+        column = value % 1024
+        value //= 1024
+        row = value % 32768
+        value //= 32768
+        bank = value % 4
+        value //= 4
+        bank_group = value % 4
+        return [0, 0, bank_group, bank, row, column]
+    av = [0] * addr_vec_size
+    value = int(address)
+    for index in range(addr_vec_size - 1, -1, -1):
+        av[index] = value % 4096
+        value //= 4096
+    if value != 0:
+        raise ValueError(f"host byte address {address} does not fit in addr_vec_size {addr_vec_size}")
+    return av
+
+
 def concrete_provenance(*, source_kind: str = "generated", manifest_name: str = "lpddr5_pim_concrete_minimal") -> dict:
     return {
         "source_kind": source_kind,
         "manifest": manifest_name,
         "generator_version": CONCRETE_GENERATOR_VERSION if source_kind == "generated" else "manual",
         "claim_boundary": list(REQUIRED_BOUNDARY_CLAIMS),
-        "non_claims": list(REQUIRED_NON_CLAIMS),
-        "notes": "backend-specific native LPDDR5-PIM opcode replay; semantic JSONL remains separate",
+        "non_claims": list(DEFAULT_NON_CLAIMS),
+        "notes": (
+            "backend-specific native LPDDR5-PIM opcode replay; PIM_BCAST is a bounded all-bank "
+            "setup abstraction rather than a vendor-faithful payload-source or timing model; "
+            "semantic JSONL remains separate"
+        ),
     }
 
 
@@ -81,6 +117,26 @@ def validate_record(record: dict) -> None:
         raise ValueError("Concrete opcode addr_vec must be a non-empty list")
     if any(not isinstance(value, int) for value in record["addr_vec"]):
         raise ValueError("Concrete opcode addr_vec entries must be integers")
+    is_host_opcode = opcode in {"READ", "WRITE"}
+    if {"addr_byte", "addr_byte_stride"} & set(record) and not is_host_opcode:
+        raise ValueError("Concrete opcode addr_byte fields are only valid for READ/WRITE")
+    if is_host_opcode and "addr_byte" not in record:
+        raise ValueError("Concrete READ/WRITE records require addr_byte")
+    if "addr_byte" in record:
+        addr_byte = record["addr_byte"]
+        if isinstance(addr_byte, bool) or not isinstance(addr_byte, int) or addr_byte < 0:
+            raise ValueError("Concrete opcode addr_byte must be a non-negative integer")
+        if is_host_opcode:
+            expected_addr_vec = addr_vec_from_byte_address(addr_byte, addr_vec_size=len(record["addr_vec"]))
+            if record["addr_vec"] != expected_addr_vec:
+                raise ValueError("Concrete READ/WRITE addr_vec must match decomposed addr_byte")
+    if "addr_byte_stride" in record:
+        if "addr_byte" not in record:
+            raise ValueError("Concrete opcode addr_byte_stride requires addr_byte")
+        addr_byte_stride = record["addr_byte_stride"]
+        if isinstance(addr_byte_stride, bool) or not isinstance(addr_byte_stride, int) or addr_byte_stride <= 0:
+            raise ValueError("Concrete opcode addr_byte_stride must be a positive integer")
+        addr_vec_from_byte_address(record["addr_byte"] + (repeat - 1) * addr_byte_stride, addr_vec_size=len(record["addr_vec"]))
 
     provenance = record["provenance"]
     if not isinstance(provenance, dict):
@@ -91,7 +147,7 @@ def validate_record(record: dict) -> None:
     for claim in REQUIRED_BOUNDARY_CLAIMS:
         if claim not in provenance["claim_boundary"]:
             raise ValueError(f"Concrete opcode provenance.claim_boundary missing {claim!r}")
-    for non_claim in REQUIRED_NON_CLAIMS:
+    for non_claim in DEFAULT_NON_CLAIMS:
         if non_claim not in provenance["non_claims"]:
             raise ValueError(f"Concrete opcode provenance.non_claims missing {non_claim!r}")
 
@@ -106,6 +162,10 @@ def validate_sequence(records: list[dict]) -> None:
         if expanded_records > MAX_EXPANDED_RECORDS:
             raise ValueError(f"Concrete opcode trace exceeds max expanded records {MAX_EXPANDED_RECORDS}")
         opcode = record["opcode"]
+        if opcode in {"READ", "WRITE"}:
+            if mode != "SB":
+                raise ValueError(f"Concrete opcode record {index} {opcode} requires SB mode")
+            continue
         if opcode == "SB":
             mode = "SB"
             saw_bcast_since_hab = False
