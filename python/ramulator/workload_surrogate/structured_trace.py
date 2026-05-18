@@ -25,6 +25,18 @@ TRANSFORMER_DATAFLOW_RECORD_KINDS = {
     "PIMOperandResidency",
     "PIMOperandReuse",
 }
+VALID_PIM_DATA_MOVE_MOVEMENT_KINDS = {
+    "broadcast_or_accounted_tile_load",
+    "preloaded_stationary_weight_residency",
+    "dynamic_activation_tile",
+    "bank_local_tile_activation",
+    "cross_bank_operand_shuffle_accounting",
+}
+SEMANTIC_ONLY_PIM_DATA_MOVE_MOVEMENT_KINDS = {
+    "dynamic_activation_tile",
+    "bank_local_tile_activation",
+    "cross_bank_operand_shuffle_accounting",
+}
 TRANSFORMER_COMPUTE_RECORD_KINDS = {
     "AttentionScore",
     "AttentionContext",
@@ -325,6 +337,12 @@ def _validate_transformer_data_move_record(record: dict) -> None:
         raise ValueError("PIMDataMove movement_policy must be a map")
     if "movement_kind" not in movement_policy:
         raise ValueError("PIMDataMove movement_policy missing required field 'movement_kind'")
+    movement_kind = movement_policy["movement_kind"]
+    if movement_kind not in VALID_PIM_DATA_MOVE_MOVEMENT_KINDS:
+        raise ValueError(
+            f"PIMDataMove movement_policy.movement_kind {movement_kind!r} "
+            f"is not a recognized movement kind; must be one of {sorted(VALID_PIM_DATA_MOVE_MOVEMENT_KINDS)}"
+        )
 
 
 def _validate_transformer_accounting_record(record: dict) -> None:

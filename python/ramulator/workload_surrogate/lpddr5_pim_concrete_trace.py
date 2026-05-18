@@ -8,6 +8,7 @@ this surface is backend-specific command replay for LPDDR5-PIM validation.
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 
@@ -18,6 +19,7 @@ MODE_OPCODES = {"SB", "HAB", "HAB_PIM"}
 REQUEST_OPCODES = {"READ", "WRITE", "PIM_BCAST", "PIM_MAC", "PIM_MAC_AB"}
 MAX_REPEAT = 1_000_000
 MAX_EXPANDED_RECORDS = 1_000_000_000
+MAX_EXPANDED_RECORDS_ENV = "RAMULATOR_MAX_EXPANDED_RECORDS"
 FORBIDDEN_RAW_ATTACC_OPCODES = {
     "PIM_WR_GB",
     "PIM_MV_BA",
@@ -156,11 +158,14 @@ def validate_sequence(records: list[dict]) -> None:
     mode = "SB"
     saw_bcast_since_hab = False
     expanded_records = 0
+    max_expanded_records = int(os.environ.get(MAX_EXPANDED_RECORDS_ENV, MAX_EXPANDED_RECORDS))
+    if max_expanded_records <= 0:
+        raise ValueError(f"{MAX_EXPANDED_RECORDS_ENV} must be positive when set")
     for index, record in enumerate(records):
         validate_record(record)
         expanded_records += record["repeat"]
-        if expanded_records > MAX_EXPANDED_RECORDS:
-            raise ValueError(f"Concrete opcode trace exceeds max expanded records {MAX_EXPANDED_RECORDS}")
+        if expanded_records > max_expanded_records:
+            raise ValueError(f"Concrete opcode trace exceeds max expanded records {max_expanded_records}")
         opcode = record["opcode"]
         if opcode in {"READ", "WRITE"}:
             if mode != "SB":

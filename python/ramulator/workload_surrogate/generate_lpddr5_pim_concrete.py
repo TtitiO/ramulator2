@@ -27,6 +27,7 @@ PER_BANK_COMPUTE_SEMANTIC_KINDS = {"PIMCompute", "AttentionScore", "AttentionCon
 ALL_BANK_LOAD_SEMANTIC_KINDS = {"PIMLoadAll", "PIMDataMove"}
 ALL_BANK_COMPUTE_SEMANTIC_KINDS = {"PIMComputeAll"}
 HOST_SEMANTIC_KINDS = {"HostRead", "HostWrite"}
+SEMANTIC_ONLY_PIM_DATA_MOVE_KINDS = {"dynamic_activation_tile", "bank_local_tile_activation", "cross_bank_operand_shuffle_accounting"}
 
 
 def _split_repeat(repeat: int, max_repeat: int = MAX_REPEAT) -> list[int]:
@@ -452,6 +453,8 @@ def lower_semantic_records_to_concrete(
         elif kind in ALL_BANK_LOAD_SEMANTIC_KINDS:
             if kind == "PIMDataMove":
                 movement_kind = dict(semantic.get("movement_policy", {})).get("movement_kind")
+                if movement_kind in SEMANTIC_ONLY_PIM_DATA_MOVE_KINDS:
+                    continue  # recognized semantic/accounting-only movement kind - no concrete opcode emitted
                 if movement_kind != "broadcast_or_accounted_tile_load":
                     raise ValueError(
                         f"Semantic record {semantic.get('record_id')} PIMDataMove movement_kind {movement_kind!r} "
