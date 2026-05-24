@@ -12,8 +12,12 @@ def pytest_addoption(parser):
 
 def pytest_configure(config):
     config.addinivalue_line("markers", "smoke: Tier 1 basic functional tests")
-    config.addinivalue_line("markers", "analysis_fast: Fast no-refresh analysis tests")
-    config.addinivalue_line("markers", "analysis_full: Full refresh-enabled analysis tests")
+    config.addinivalue_line(
+        "markers", "latency_throughput_fast: Fast no-refresh latency-throughput tests"
+    )
+    config.addinivalue_line(
+        "markers", "latency_throughput_full: Full refresh-enabled latency-throughput tests"
+    )
     config.addinivalue_line("markers", "device_timings: DRAM device timing and legality tests")
     config.addinivalue_line(
         "markers", "controller_scheduling: Controller request scheduling tests"
