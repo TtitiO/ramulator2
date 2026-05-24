@@ -29,7 +29,7 @@ def run_single(
         warmup_cycles=warmup,
         seed=12345,
         read_ratio=read_ratio,
-        stream_cls=cfg["stream_cls"],
+        stream_cols=cfg["stream_cols"],
         **layout,
     )
 

@@ -1,5 +1,6 @@
 import ramulator
 
+
 CONFIG = dict(
     dram_class="DDR5",
     org_preset="DDR5_16Gb_x8",
@@ -9,6 +10,11 @@ CONFIG = dict(
     fast_ctrl_extra_kwargs=dict(
         refresh_manager=ramulator.refresh_manager.NoRefresh(),
     ),
+    full_ctrl_extra_kwargs=dict(
+        refresh_manager=ramulator.refresh_manager.AllBank(scope="Rank"),
+    ),
+    full_streaming_requests=1_000_000,
     frontend_clock_ratio=4,
     stream_cols=8,
+    nop_counters=[1, 15, 16, 17, 18, 19, 20, 25, 30, 40, 50, 75, 100, 1000, 2000, 5000, 10000],
 )
