@@ -198,19 +198,23 @@ def generate_header(cls):
         if incremental_counted_names:
             for counted_name in incremental_counted_names:
                 timing_name = incremental_timing_map[counted_name]
-                current_expr = _sum_term_expr(
-                    incremental_energy_terms[counted_name], subtract_baseline=True
-                )
+                energy_terms = incremental_energy_terms[counted_name]
+                current_expr = _sum_term_expr(energy_terms, subtract_baseline=True)
                 scale_key = incremental_energy_scales.get(counted_name)
                 scale_expr = f" * {scale_key}" if scale_key else ""
                 event_energy_expr = incremental_event_energy_exprs.get(counted_name)
-                event_expr = (
-                    f" + rank_stats.incremental_command_counters[Command::{counted_name}] * ({event_energy_expr})"
-                    if event_energy_expr
-                    else ""
-                )
+                formula_parts = []
+                if energy_terms:
+                    formula_parts.append(
+                        f"({current_expr}) * rank_stats.incremental_command_counters[Command::{counted_name}] * timing_vals[Timing::{timing_name}]{scale_expr} * tCK_ns / 1E3"
+                    )
+                if event_energy_expr:
+                    formula_parts.append(
+                        f"rank_stats.incremental_command_counters[Command::{counted_name}] * ({event_energy_expr})"
+                    )
+                formula_expr = " + ".join(formula_parts) if formula_parts else "0.0"
                 incremental_formulas.append(
-                    f"    double {counted_name.lower()}_incremental_cmd_energy = ({current_expr}) * rank_stats.incremental_command_counters[Command::{counted_name}] * timing_vals[Timing::{timing_name}]{scale_expr} * tCK_ns / 1E3{event_expr};"
+                    f"    double {counted_name.lower()}_incremental_cmd_energy = {formula_expr};"
                 )
             incremental_sum = " +\n        ".join(
                 f"{counted_name.lower()}_incremental_cmd_energy"

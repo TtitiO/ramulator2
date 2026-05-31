@@ -362,25 +362,13 @@ class LPDDR5PIM : public DRAMSpec {
     total_energy_pJ += rank_stats.total_energy_pJ;
 
     double pim_mac_incremental_cmd_energy =
-        ((power_params.at("VDD1") * (power_params.at("IDD4R1") - power_params.at("IDD3N1"))) +
-         (power_params.at("VDD2H") * (power_params.at("IDD4R2H") - power_params.at("IDD3N2H"))) +
-         (power_params.at("VDD2L") * (power_params.at("IDD4R2L") - power_params.at("IDD3N2L"))) +
-         (power_params.at("VDDQ") * (power_params.at("IDD4RQ") - power_params.at("IDD3NQ")))) *
-            rank_stats.incremental_command_counters[Command::PIM_MAC] * timing_vals[Timing::nPIM_MAC_LAT] * tCK_ns /
-            1E3 +
         rank_stats.incremental_command_counters[Command::PIM_MAC] *
-            (pim_lanes * pim_compute_energy_pJ_per_mac + pim_cell_to_pim_energy_pJ_per_256b +
-             pim_interconnect_energy_pJ_per_256b + pim_vrf_access_energy_pJ + pim_srf_access_energy_pJ);
+        (pim_array_local_energy_pJ + pim_lanes * pim_compute_energy_pJ_per_mac + pim_cell_to_pim_energy_pJ_per_256b +
+         pim_interconnect_energy_pJ_per_256b + pim_vrf_access_energy_pJ + pim_srf_access_energy_pJ);
     double pim_mac_ab_incremental_cmd_energy =
-        ((power_params.at("VDD1") * (power_params.at("IDD4R1") - power_params.at("IDD3N1"))) +
-         (power_params.at("VDD2H") * (power_params.at("IDD4R2H") - power_params.at("IDD3N2H"))) +
-         (power_params.at("VDD2L") * (power_params.at("IDD4R2L") - power_params.at("IDD3N2L"))) +
-         (power_params.at("VDDQ") * (power_params.at("IDD4RQ") - power_params.at("IDD3NQ")))) *
-            rank_stats.incremental_command_counters[Command::PIM_MAC_AB] * timing_vals[Timing::nPIM_MAC_LAT] * tCK_ns /
-            1E3 +
         rank_stats.incremental_command_counters[Command::PIM_MAC_AB] *
-            (pim_lanes * pim_compute_energy_pJ_per_mac + pim_cell_to_pim_energy_pJ_per_256b +
-             pim_interconnect_energy_pJ_per_256b + pim_vrf_access_energy_pJ + pim_srf_access_energy_pJ);
+        (pim_array_local_energy_pJ + pim_lanes * pim_compute_energy_pJ_per_mac + pim_cell_to_pim_energy_pJ_per_256b +
+         pim_interconnect_energy_pJ_per_256b + pim_vrf_access_energy_pJ + pim_srf_access_energy_pJ);
     double pim_bcast_incremental_cmd_energy =
         ((power_params.at("VDD1") * (power_params.at("IDD01") - power_params.at("IDD2N1"))) +
          (power_params.at("VDD2H") * (power_params.at("IDD02H") - power_params.at("IDD2N2H"))) +
