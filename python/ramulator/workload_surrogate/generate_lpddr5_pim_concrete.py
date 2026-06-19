@@ -29,6 +29,24 @@ ALL_BANK_COMPUTE_SEMANTIC_KINDS = {"PIMComputeAll"}
 HOST_SEMANTIC_KINDS = {"HostRead", "HostWrite"}
 SEMANTIC_ONLY_PIM_DATA_MOVE_KINDS = {"dynamic_activation_tile", "bank_local_tile_activation", "cross_bank_operand_shuffle_accounting"}
 
+# Physical residency classification within PER_BANK_COMPUTE_SEMANTIC_KINDS.
+#
+# WEIGHT-STATIONARY ops keep a stationary weight shard resident in every bank
+# (residency="preloaded_stationary") and feed all banks the SAME activation
+# vector (activation_distribution_policy="broadcast").  On this PIM architecture
+# the natural primitive is the all-bank broadcast MAC (PIM_MAC_AB): broadcast
+# the activation once, every bank fires its local shard simultaneously.
+#
+# DATA-STATIONARY ops (attention) keep a DIFFERENT KV-cache slice resident in
+# each bank (host-read per tile, "semantic_kv_cache_host_read_per_tile"); there
+# is no common broadcastable input, so each bank must be addressed individually
+# with a per-bank PIM_MAC.
+#
+# This split is what lets a single trace mix both primitives faithfully instead
+# of forcing every compute op through one global mac_mode.
+WEIGHT_STATIONARY_COMPUTE_KINDS = {"FFNProjection", "MoERouter", "MoEExpertFFN"}
+DATA_STATIONARY_COMPUTE_KINDS = {"AttentionScore", "AttentionContext"}
+
 
 def _split_repeat(repeat: int, max_repeat: int = MAX_REPEAT) -> list[int]:
     if repeat <= 0:
@@ -261,27 +279,46 @@ def lower_semantic_records_to_concrete(
     col_level: int = 5,
     manifest_name: str = "phase2_semantic_lowered_manifest",
     materialize_weights: bool = False,
+    interleave_banks: bool = False,
+    interleave_depth: int = 4,
+    max_repeat_per_record: int = MAX_REPEAT,
+    mac_mode: str = "per_kind",
 ) -> list[dict]:
     """Lower Phase 2 semantic records into native LPDDR5-PIM concrete opcodes.
 
-    This is an offline compiler stage. HostRead/HostWrite lower to concrete READ
-    and WRITE requests. Barrier/Drain become provenance/order annotations only;
-    concrete ordering is expressed by legal host requests and LPDDR5-PIM
-    mode/control opcodes. Phase 4 semantic-only accounting stages such as
-    AttentionSoftmax, PIMElementwise, TopK, dispatch, and combine intentionally do
-    not lower to fake hardware commands.
+    mac_mode controls emit strategy:
+      "per_kind" (default): weight-stationary ops (FFN/proj/MoE) → all-bank
+        PIM_MAC_AB; data-stationary ops (attention) → per-bank PIM_MAC.
+      "all_bank": force every compute kind through PIM_MAC_AB.
+      "per_bank": force every compute kind through per-bank PIM_MAC.
 
-    By default, weight PIMDataMove records (operand_role="weight") are NOT lowered
-    to concrete opcodes (weights are resident/preloaded_stationary in steady-state
-    inference).  Pass materialize_weights=True for cold-start preload or frontend
-    stress-test replay; materialized weights lower to regular concrete WRITE
-    records, not PIM_BCAST, because PIM_BCAST is reserved for common all-bank
-    setup/broadcast payloads rather than per-bank resident weight preload.
-    """
+    With interleave_banks=True, multi-bank PIM_MAC ops emit as ONE compact
+    record with in-memory interleaving fields — the C++ frontend expands them
+    at replay time.  Set materialize_weights=True to emit host-WRITE preload
+    records for cold-start experiments (default steady-state skips weights)."""
     records: list[dict] = []
     next_id = 0
     mode = "SB"
     all_bank_load_ready = False
+
+    if mac_mode not in {"per_kind", "all_bank", "per_bank"}:
+        raise ValueError(f"mac_mode must be 'per_kind', 'all_bank', or 'per_bank'; got {mac_mode!r}")
+
+    def resolve_mac_mode(kind: str) -> str:
+        """Resolve the effective per-bank-compute lowering for one semantic kind.
+
+        ``per_kind`` honours physical operand residency; ``all_bank``/``per_bank``
+        force a single primitive for every compute kind (research overrides).
+        """
+        if mac_mode != "per_kind":
+            return mac_mode
+        if kind in WEIGHT_STATIONARY_COMPUTE_KINDS:
+            return "all_bank"
+        if kind in DATA_STATIONARY_COMPUTE_KINDS:
+            return "per_bank"
+        # PIMCompute (generic) has no declared residency; keep it per-bank so the
+        # default never silently broadcasts an op whose physics we don't know.
+        return "per_bank"
 
     def append(
         opcode: str,
@@ -416,39 +453,128 @@ def lower_semantic_records_to_concrete(
             raise ValueError(f"Semantic record {semantic.get('record_id')} repeat must be positive")
 
         if kind in PER_BANK_COMPUTE_SEMANTIC_KINDS:
-            if mode != "SB":
-                append("SB", semantic, base_av, notes="return to single-bank mode before per-bank PIM_MAC lowering")
-                mode = "SB"
-                all_bank_load_ready = False
-            elif not records:
-                append("SB", semantic, base_av, notes="enter single-bank mode for semantic PIMCompute lowering")
             total_per_request = num_requests * semantic_repeat
             bank_seq = list(semantic.get("bank_sequence", [0, 1, 2, 3]))
             bank_len = max(1, len(bank_seq))
-            full_cycles = total_per_request // bank_len
-            remainder = total_per_request % bank_len
-            for bank_index in range(bank_len):
-                per_bank_total = full_cycles + (1 if bank_index < remainder else 0)
-                if per_bank_total == 0:
-                    continue
-                av = _addr_vec_from_semantic(
-                    semantic,
-                    bank_index,
-                    addr_vec_size=addr_vec_size,
-                    bank_level=bank_level,
-                    bank_positions=bank_positions,
-                    bank_counts=bank_counts,
-                    row_level=row_level,
-                    col_level=col_level,
-                )
-                repeat_chunks = _split_repeat(per_bank_total)
-                for split_index, repeat_chunk in enumerate(repeat_chunks):
+
+            if interleave_banks and bank_len > 1 and resolve_mac_mode(kind) == "all_bank":
+                # All-bank broadcast path: HAB → PIM_BCAST → HAB_PIM → PIM_MAC_AB×n → SB
+                # Work conservation: per-bank scheme spreads total_per_request MACs
+                # across bank_len banks, each doing ceil(total/bank_len) MACs.
+                # One PIM_MAC_AB performs one MAC on every bank simultaneously,
+                # so n_ab = ceil(total_per_request / bank_len) conserves arithmetic.
+                n_ab = (total_per_request + bank_len - 1) // bank_len
+                if n_ab < 1:
+                    n_ab = 1
+                if mode != "HAB":
+                    append("HAB", semantic, base_av, notes="enter host all-bank mode for all-bank MAC lowering")
+                    mode = "HAB"
+                    all_bank_load_ready = False
+                if not all_bank_load_ready:
+                    append("PIM_BCAST", semantic, base_av, notes="bounded all-bank load before all-bank MAC lowering")
+                    all_bank_load_ready = True
+                append("HAB_PIM", semantic, base_av, notes="enter PIM all-bank mode for all-bank MAC lowering")
+                remaining = n_ab
+                split_index = 0
+                while remaining > 0:
+                    repeat_chunk = min(max_repeat_per_record, remaining)
                     notes = (
-                        f"semantic {kind} lowered to concrete PIM_MAC"
-                        if len(repeat_chunks) == 1
-                        else f"semantic {kind} lowered to concrete PIM_MAC split {split_index + 1}/{len(repeat_chunks)}"
+                        f"semantic {kind} lowered to all-bank PIM_MAC_AB"
+                        if remaining <= max_repeat_per_record
+                        else f"semantic {kind} lowered to all-bank PIM_MAC_AB split {split_index + 1}"
                     )
-                    append("PIM_MAC", semantic, av, repeat=repeat_chunk, notes=notes)
+                    append("PIM_MAC_AB", semantic, base_av, repeat=repeat_chunk, notes=notes)
+                    remaining -= repeat_chunk
+                    split_index += 1
+                append("SB", semantic, base_av, notes="return to single-bank mode after all-bank MAC lowering")
+                mode = "SB"
+                all_bank_load_ready = False
+            else:
+                # Per-bank path (serial or interleaved compact PIM_MAC)
+                if mode != "SB":
+                    append("SB", semantic, base_av, notes="return to single-bank mode before per-bank PIM_MAC lowering")
+                    mode = "SB"
+                    all_bank_load_ready = False
+                elif not records:
+                    append("SB", semantic, base_av, notes="enter single-bank mode for semantic PIMCompute lowering")
+
+                if interleave_banks and bank_len > 1:
+                    # Emit ONE compact PIM_MAC record per compute group with
+                    # in-memory interleaving fields.  The C++ concrete frontend
+                    # expands the compact record into N round-robin issues at
+                    # replay time — zero file growth, zero per-bank explosion.
+                    dep = dict(semantic.get("dependency_context", {}))
+                    row_pol = dict(semantic.get("row_policy", {}))
+                    col_pol = dict(semantic.get("column_policy", {}))
+                    dependency_count = max(1, int(dep.get("dependency_count", 1)))
+                    row_count_val = max(1, int(row_pol.get("row_count", 1)))
+                    row_start_val = int(row_pol.get("row_start", 0))
+                    col_start_val = int(col_pol.get("column_start", 0))
+                    resolved_row = int(row_pol.get("resolved_row", row_start_val))
+                    resolved_col = int(col_pol.get("resolved_column", col_start_val))
+                    resolved_row_offset = (resolved_row - row_start_val) % row_count_val
+                    resolved_col_offset = (resolved_col - col_start_val) % dependency_count
+
+                    extra_fields: dict = {
+                        "bank_sequence": [int(b) for b in bank_seq],
+                        "dependency_count": dependency_count,
+                        "row_count": row_count_val,
+                        "row_start": row_start_val,
+                        "column_start": col_start_val,
+                        "resolved_row_offset": resolved_row_offset,
+                        "resolved_col_offset": resolved_col_offset,
+                        "interleave_depth": interleave_depth,
+                    }
+                    if bank_positions is not None and bank_counts is not None:
+                        extra_fields["bank_positions"] = list(bank_positions)
+                        extra_fields["bank_counts"] = list(bank_counts)
+                    else:
+                        extra_fields["bank_level"] = bank_level
+                    extra_fields["row_level"] = row_level
+                    extra_fields["col_level"] = col_level
+
+                    remaining = total_per_request
+                    start_idx = 0
+                    split_index = 0
+                    while remaining > 0:
+                        repeat_chunk = min(max_repeat_per_record, remaining)
+                        chunk_fields = dict(extra_fields)
+                        chunk_fields["interleave_start_idx"] = start_idx
+                        notes = (
+                            f"semantic {kind} lowered to compact interleaved PIM_MAC"
+                            if remaining <= max_repeat_per_record
+                            else f"semantic {kind} lowered to compact interleaved PIM_MAC split {split_index + 1}"
+                        )
+                        append("PIM_MAC", semantic, base_av, repeat=repeat_chunk,
+                               notes=notes, extra_fields=chunk_fields)
+                        remaining -= repeat_chunk
+                        start_idx += repeat_chunk
+                        split_index += 1
+                else:
+                    full_cycles = total_per_request // bank_len
+                    remainder = total_per_request % bank_len
+                    for bank_index in range(bank_len):
+                        per_bank_total = full_cycles + (1 if bank_index < remainder else 0)
+                        if per_bank_total == 0:
+                            continue
+                        av = _addr_vec_from_semantic(
+                            semantic,
+                            bank_index,
+                            addr_vec_size=addr_vec_size,
+                            bank_level=bank_level,
+                            bank_positions=bank_positions,
+                            bank_counts=bank_counts,
+                            row_level=row_level,
+                            col_level=col_level,
+                        )
+                        repeat_chunks = _split_repeat(per_bank_total)
+                        for split_index, repeat_chunk in enumerate(repeat_chunks):
+                            notes = (
+                                f"semantic {kind} lowered to concrete PIM_MAC"
+                                if len(repeat_chunks) == 1
+                                else f"semantic {kind} lowered to concrete PIM_MAC split {split_index + 1}/{len(repeat_chunks)}"
+                            )
+                            append("PIM_MAC", semantic, av, repeat=repeat_chunk, notes=notes)
             mode = "SB"
         elif kind in ALL_BANK_LOAD_SEMANTIC_KINDS:
             if kind == "PIMDataMove":

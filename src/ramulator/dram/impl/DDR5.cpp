@@ -6,6 +6,9 @@
  *
  * Regenerate:   python -m ramulator codegen DDR5
  ******************************************************************************/
+#include "ramulator/dram/dram_spec.h"
+
+#include "ramulator/dram/commands/populate.h"
 #include "ramulator/dram/commands/ACT.h"
 #include "ramulator/dram/commands/PREab.h"
 #include "ramulator/dram/commands/PREpb.h"
@@ -14,8 +17,7 @@
 #include "ramulator/dram/commands/REFab.h"
 #include "ramulator/dram/commands/WR.h"
 #include "ramulator/dram/commands/WRA.h"
-#include "ramulator/dram/commands/populate.h"
-#include "ramulator/dram/dram_spec.h"
+
 
 namespace Ramulator {
 
@@ -32,36 +34,17 @@ class DDR5 : public DRAMSpec {
   };
   struct Timing {
     enum : int {
-      rate,
-      nBL,
-      nCL,
-      nRCD,
-      nRP,
-      nRAS,
-      nRC,
-      nWR,
-      nRTP,
-      nCWL,
-      nPPD,
-      nCCDS,
-      nCCDL,
-      nCCDS_WR,
-      nCCDL_WR,
-      nRRDS,
-      nRRDL,
-      nWTRS,
-      nWTRL,
-      nFAW,
-      nRFC,
-      nREFI,
-      nCS,
-      tCK_ps,
-      COUNT
+    rate, nBL, nCL, nRCD, nRP, nRAS, nRC, nWR, nRTP, nCWL, nPPD, nCCDS, nCCDL, nCCDS_WR, nCCDL_WR, nRRDS, nRRDL,
+    nWTRS, nWTRL, nFAW, nRFC, nREFI, nCS, tCK_ps, COUNT
     };
   };
 
-  using CommandImpls = std::tuple<Cmd::ACT<DDR5>, Cmd::PREpb<DDR5>, Cmd::PREab<DDR5>, Cmd::RD<DDR5>, Cmd::WR<DDR5>,
-                                  Cmd::RDA<DDR5>, Cmd::WRA<DDR5>, Cmd::REFab<DDR5> >;
+
+
+  using CommandImpls = std::tuple<
+      Cmd::ACT<DDR5>, Cmd::PREpb<DDR5>, Cmd::PREab<DDR5>, Cmd::RD<DDR5>, Cmd::WR<DDR5>, Cmd::RDA<DDR5>,
+      Cmd::WRA<DDR5>, Cmd::REFab<DDR5>
+  >;
 
   DDR5(const ConfigNode& config) {
     // Counts
@@ -74,23 +57,24 @@ class DDR5 : public DRAMSpec {
     set_names(levels, level_names, {"Channel", "Rank", "BankGroup", "Bank", "Row", "Column"});
     set_names(commands, command_names, {"ACT", "PREpb", "PREab", "RD", "WR", "RDA", "WRA", "REFab"});
     set_names(states, state_names, {"Opened", "Closed", "N_A"});
-    set_names(timings, timing_names, {"rate",  "nBL",   "nCL",   "nRCD",  "nRP",   "nRAS",     "nRC",      "nWR",
-                                      "nRTP",  "nCWL",  "nPPD",  "nCCDS", "nCCDL", "nCCDS_WR", "nCCDL_WR", "nRRDS",
-                                      "nRRDL", "nWTRS", "nWTRL", "nFAW",  "nRFC",  "nREFI",    "nCS",      "tCK_ps"});
+    set_names(timings, timing_names, {
+        "rate", "nBL", "nCL", "nRCD", "nRP", "nRAS", "nRC", "nWR", "nRTP", "nCWL", "nPPD", "nCCDS", "nCCDL",
+        "nCCDS_WR", "nCCDL_WR", "nRRDS", "nRRDL", "nWTRS", "nWTRL", "nFAW", "nRFC", "nREFI", "nCS", "tCK_ps"
+    });
 
     // Static spec data
     internal_prefetch_size = 16;
     init_states = {
-        State::N_A,     // Channel
-        State::N_A,     // Rank
-        State::N_A,     // BankGroup
-        State::Closed,  // Bank
-        State::Closed,  // Row
-        State::N_A,     // Column
+        State::N_A,           // Channel
+        State::N_A,           // Rank
+        State::N_A,           // BankGroup
+        State::Closed,        // Bank
+        State::Closed,        // Row
+        State::N_A,           // Column
     };
     supported_requests = {
-        Command::RD,  // Read -> RD
-        Command::WR,  // Write -> WR
+        Command::RD,        // Read -> RD
+        Command::WR,        // Write -> WR
     };
 
     // Runtime config (organization, timing values, timing constraints)
@@ -98,11 +82,14 @@ class DDR5 : public DRAMSpec {
 
     // Command handlers (function pointers, metadata, bank targets)
     populate_commands(CommandImpls{}, *this);
+
   }
+
+
 };
 
 // Self-registration
-static bool _dram_ddr5 =
-    DRAMSpec::register_standard("DDR5", [](const ConfigNode& config) { return std::make_unique<DDR5>(config); });
+static bool _dram_ddr5 = DRAMSpec::register_standard(
+    "DDR5", [](const ConfigNode& config) { return std::make_unique<DDR5>(config); });
 
 }  // namespace Ramulator

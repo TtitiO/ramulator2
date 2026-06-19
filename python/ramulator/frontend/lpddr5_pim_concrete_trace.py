@@ -25,3 +25,4 @@ class LPDDR5PIMConcreteTrace(Component):
     max_records = Param(int, default=1000000)
     max_repeat = Param(int, default=1000000)
     max_expanded_records = Param(int, default=1000000000)
+    max_inflight_requests = Param(int, default=1)

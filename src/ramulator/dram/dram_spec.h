@@ -136,7 +136,6 @@ struct DRAMSpec {
   double pim_compute_energy_pJ_per_mac = 0.0;
   double pim_array_local_energy_pJ = 0.0;
   double pim_cell_to_pim_energy_pJ_per_256b = 0.0;
-  double pim_interconnect_energy_pJ_per_256b = 0.0;
   double pim_vrf_access_energy_pJ = 0.0;
   double pim_srf_access_energy_pJ = 0.0;
   double pim_mode_switch_energy_pJ = 0.0;

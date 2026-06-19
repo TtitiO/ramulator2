@@ -119,6 +119,7 @@ class LPDDR5PIMController : public ControllerBase {
   size_t s_num_rr_head_of_line_blocked_cycles = 0;
   size_t s_num_queue_empty_cycles = 0;
   size_t s_num_issued_pim_mac = 0;
+  size_t s_num_issued_pim_mac_ab = 0;
   size_t s_num_pim_reqs_served = 0;
   size_t s_pim_inflight_peak = 0;
   size_t s_pim_simultaneous_active_banks_peak = 0;
@@ -146,6 +147,7 @@ class LPDDR5PIMController : public ControllerBase {
   int s_pim_movement_cycles = 1;
   int s_pim_writeback_cycles = 0;
   int s_pim_completion_latency_cycles = 0;
+  int s_pim_ab_mac_latency_cycles = 0;
   int s_pim_slots_per_request = 1;
   int s_pim_banks_per_mpu = 1;
   int s_pim_mpu_group_count = 0;
@@ -155,7 +157,6 @@ class LPDDR5PIMController : public ControllerBase {
   double s_pim_compute_energy_pJ_per_mac = 0.0;
   double s_pim_array_local_energy_pJ = 0.0;
   double s_pim_cell_to_pim_energy_pJ_per_256b = 0.0;
-  double s_pim_interconnect_energy_pJ_per_256b = 0.0;
   double s_pim_vrf_access_energy_pJ = 0.0;
   double s_pim_srf_access_energy_pJ = 0.0;
   double s_pim_mode_switch_energy_pJ = 0.0;
@@ -291,7 +292,6 @@ void LPDDR5PIMController::init() {
   s_pim_compute_energy_pJ_per_mac = spec.pim_compute_energy_pJ_per_mac;
   s_pim_array_local_energy_pJ = spec.pim_array_local_energy_pJ;
   s_pim_cell_to_pim_energy_pJ_per_256b = spec.pim_cell_to_pim_energy_pJ_per_256b;
-  s_pim_interconnect_energy_pJ_per_256b = spec.pim_interconnect_energy_pJ_per_256b;
   s_pim_vrf_access_energy_pJ = spec.pim_vrf_access_energy_pJ;
   s_pim_srf_access_energy_pJ = spec.pim_srf_access_energy_pJ;
   s_pim_mode_switch_energy_pJ = spec.pim_mode_switch_energy_pJ;
@@ -340,6 +340,7 @@ void LPDDR5PIMController::setup(IFrontEnd* frontend, IMemorySystem* memory_syste
   m_stats.add("pim_movement_cycles", s_pim_movement_cycles);
   m_stats.add("pim_writeback_cycles", s_pim_writeback_cycles);
   m_stats.add("pim_completion_latency_cycles", s_pim_completion_latency_cycles);
+  m_stats.add("pim_ab_mac_latency_cycles", s_pim_ab_mac_latency_cycles);
   m_stats.add("pim_slots_per_request", s_pim_slots_per_request);
   m_stats.add("pim_slot_cost", s_pim_slots_per_request);
   m_stats.add("pim_banks_per_mpu", s_pim_banks_per_mpu);
@@ -353,10 +354,10 @@ void LPDDR5PIMController::setup(IFrontEnd* frontend, IMemorySystem* memory_syste
   m_stats.add("num_rr_head_of_line_blocked_cycles", s_num_rr_head_of_line_blocked_cycles);
   m_stats.add("num_queue_empty_cycles", s_num_queue_empty_cycles);
   m_stats.add("num_issued_pim_mac", s_num_issued_pim_mac);
+  m_stats.add("num_issued_pim_mac_ab", s_num_issued_pim_mac_ab);
   m_stats.add("pim_compute_energy_pJ_per_mac", s_pim_compute_energy_pJ_per_mac);
   m_stats.add("pim_array_local_energy_pJ", s_pim_array_local_energy_pJ);
   m_stats.add("pim_cell_to_pim_energy_pJ_per_256b", s_pim_cell_to_pim_energy_pJ_per_256b);
-  m_stats.add("pim_interconnect_energy_pJ_per_256b", s_pim_interconnect_energy_pJ_per_256b);
   m_stats.add("pim_vrf_access_energy_pJ", s_pim_vrf_access_energy_pJ);
   m_stats.add("pim_srf_access_energy_pJ", s_pim_srf_access_energy_pJ);
   m_stats.add("pim_mode_switch_energy_pJ", s_pim_mode_switch_energy_pJ);
@@ -404,6 +405,17 @@ bool LPDDR5PIMController::send(Request& req) {
 
   bool is_success = false;
   req.arrive = m_clk;
+  // Reject PIM_MAC_AB at enqueue time when one is already inflight.  The AB
+  // engine is strictly serial (m_pim_ab_inflight).  The concrete frontend
+  // already caps AB records at one outstanding issue, so this is defense in
+  // depth: it guarantees the read buffer never accumulates blocked AB ops that
+  // FRFCFS would rescan every tick (the ~65x wall-clock blowup), regardless of
+  // any caller's max_inflight_requests.  Per-bank PIM_MAC and host ops are
+  // unaffected.
+  if (req.final_command == m_cmd_pim_mac_ab && m_pim_ab_inflight) {
+    req.arrive = -1;
+    return false;
+  }
   if (req.type_id == Request::Type::Read || req.final_command == m_cmd_pim_mac ||
       req.final_command == m_cmd_pim_bcast || req.final_command == m_cmd_pim_mac_ab ||
       req.final_command == m_cmd_sb || req.final_command == m_cmd_hab ||
@@ -732,18 +744,32 @@ bool LPDDR5PIMController::is_owned_act2_candidate(const Request& req) const {
 }
 
 ControllerBase::Candidate LPDDR5PIMController::select_normal_candidate() {
+  // When an all-bank PIM_MAC_AB is inflight, every MPU is occupied and no PIM
+  // op (AB or per-bank) can co-issue.  Short-circuit PIM eligibility here so
+  // FRFCFS doesn't waste ticks scanning buffered AB candidates (and per-bank
+  // PIM_MACs with busy MPU groups) around the full active-buffer loop.
+  // Only host READ/WRITE and mode commands (SB/HAB/HAB_PIM/PIM_BCAST) can
+  // issue during the AB latency window.
+  auto pim_eligible = [&](const Request& req) -> bool {
+    if (m_pim_ab_inflight && (req.final_command == m_cmd_pim_mac ||
+                              req.final_command == m_cmd_pim_mac_ab)) {
+      return false;
+    }
+    return !would_block_pim_launch(req);
+  };
+
   Candidate cand = pick_best_ready_from(m_active_buffer, [&](const Request& req) {
-    return !would_block_host_request(req) && !would_block_pim_launch(req);
+    return !would_block_host_request(req) && pim_eligible(req);
   });
   if (!cand.valid) {
     cand = pick_priority_if([&](const Request& req) {
-      return !would_block_host_request(req) && !would_block_pim_launch(req) && is_owned_act2_candidate(req) &&
+      return !would_block_host_request(req) && pim_eligible(req) && is_owned_act2_candidate(req) &&
              !would_block_activating(req.command, req.addr_vec);
     });
   }
   if (!cand.valid && m_priority_buffer.size() == 0) {
     cand = pick_rw_if([&](const Request& req) {
-      return !would_block_host_request(req) && !would_block_pim_launch(req) && is_owned_act2_candidate(req) &&
+      return !would_block_host_request(req) && pim_eligible(req) && is_owned_act2_candidate(req) &&
              !would_block_activating(req.command, req.addr_vec);
     });
   }
@@ -793,6 +819,16 @@ void LPDDR5PIMController::complete_pim_if_ready() {
     m_pim_ab_inflight = false;
     m_pim_ab_start_clk = -1;
     m_pim_ab_done_clk = -1;
+    // Restore all-bank load-ready on completion so a SEQUENCE of PIM_MAC_AB ops
+    // sharing one broadcast can each launch in turn.  launch_inflight_pim_ab
+    // clears the flag at launch (to prevent a second *concurrent* AB op); the
+    // m_pim_ab_inflight gate already enforces serialization, so re-arming here
+    // is safe.  This models the one-broadcast-many-MAC GEMV pattern (the input
+    // vector stays resident across MACs against resident weights), letting the
+    // lowering emit one PIM_BCAST per compute group instead of one per MAC.
+    // The reference per-MAC PIMComputeAll sequence is unaffected: its
+    // intervening HAB re-clears the flag before the next broadcast.
+    m_pim_all_bank_load_ready = true;
     s_pim_simultaneous_active_banks_peak = std::max(
         s_pim_simultaneous_active_banks_peak,
         static_cast<size_t>(m_device.m_bank_nodes.size()));
@@ -852,9 +888,17 @@ void LPDDR5PIMController::launch_inflight_pim_ab(Candidate cand) {
   m_pim_ab_request = *cand.it;
   m_pim_ab_request.depart = -1;
   m_pim_ab_start_clk = m_clk;
-  m_pim_ab_done_clk = m_clk + m_pim_completion_latency_cycles;
+  // k1 (banks_per_mpu=1): every bank has a dedicated CU -> all banks compute in
+  //   parallel in one MAC pipeline pass -> latency = completion_latency.
+  // k2 (banks_per_mpu=2): each MPU is time-shared across its banks_per_mpu banks,
+  //   walking them serially -> latency = banks_per_mpu * completion_latency.
+  // This mirrors LP-Spec's 2-banks-per-MPU sharing vs CD-PIM's dedicated per-bank CU.
+  Clk_t ab_latency = m_pim_completion_latency_cycles * m_pim_banks_per_mpu;
+  m_pim_ab_done_clk = m_clk + ab_latency;
+  s_pim_ab_mac_latency_cycles = static_cast<int>(ab_latency);
   m_pim_ab_inflight = true;
   m_pim_all_bank_load_ready = false;
+  s_num_issued_pim_mac_ab++;
   s_pim_ab_inflight_peak = std::max(s_pim_ab_inflight_peak, static_cast<size_t>(1));
   s_pim_inflight_peak = std::max(s_pim_inflight_peak, static_cast<size_t>(m_device.m_bank_nodes.size()));
   s_pim_simultaneous_active_banks_peak = std::max(

@@ -29,6 +29,23 @@ class LPDDR5PIMConcreteTrace : public IFrontEnd, public Implementation {
     int repeat;
     int64_t addr_byte;
     int64_t addr_byte_stride;
+    // In-memory bank interleaving fields (optional; only active when
+    // bank_sequence is non-empty on a PIM_MAC record).  One compact record
+    // expands into N interleaved issues at replay time with zero file growth.
+    std::vector<int> bank_sequence;
+    std::vector<int> bank_positions;
+    std::vector<int> bank_counts;
+    int dependency_count = 0;
+    int row_count = 1;
+    int row_start = 0;
+    int column_start = 0;
+    int resolved_row_offset = 0;
+    int resolved_col_offset = 0;
+    int interleave_depth = 4;
+    int interleave_start_idx = 0;
+    int bank_level = 3;
+    int row_level = 4;
+    int col_level = 5;
   };
 
   std::vector<OpcodeRecord> m_records;
@@ -46,6 +63,7 @@ class LPDDR5PIMConcreteTrace : public IFrontEnd, public Implementation {
   int m_max_records = 1000000;
   int m_max_repeat = 1000000;
   int64_t m_max_expanded_records = 1000000000;
+  int m_max_inflight_requests = 1;
 
   size_t m_curr_record_idx = 0;
   int m_curr_repeat_idx = 0;
@@ -79,6 +97,7 @@ class LPDDR5PIMConcreteTrace : public IFrontEnd, public Implementation {
     RAMULATOR_PARSE_PARAM(m_max_records, int, "max_records").default_val(1000000);
     RAMULATOR_PARSE_PARAM(m_max_repeat, int, "max_repeat").default_val(1000000);
     RAMULATOR_PARSE_PARAM(m_max_expanded_records, int64_t, "max_expanded_records").default_val(1000000000);
+    RAMULATOR_PARSE_PARAM(m_max_inflight_requests, int, "max_inflight_requests").default_val(1);
 
     if (m_addr_vec_size <= 0) {
       throw std::runtime_error("LPDDR5PIMConcreteTrace: addr_vec_size must be positive");
@@ -114,11 +133,30 @@ class LPDDR5PIMConcreteTrace : public IFrontEnd, public Implementation {
     if (m_curr_record_idx >= m_records.size()) {
       return;
     }
-    if (m_inflight_requests > 0) {
+
+    const OpcodeRecord& record = m_records[m_curr_record_idx];
+
+    // Per-record inflight cap.  Only a bank-rotating per-bank PIM_MAC record
+    // (non-empty bank_sequence) may have multiple issues outstanding at once:
+    // consecutive issues target different banks (bank_sequence rotation) and are
+    // genuinely independent, so non-interfering banks (different MPU groups, no
+    // shared dependency) execute in parallel.  The controller still serializes
+    // same-bank and same-MPU-group ops, so this exposes real inter-bank
+    // parallelism without overstating it.
+    //
+    // Everything else (all-bank PIM_MAC_AB, mode switches SB/HAB/HAB_PIM/BCAST,
+    // host READ/WRITE, and plain non-rotating PIM_MAC) stays strictly serial
+    // (cap 1).  This preserves the HAB→BCAST→HAB_PIM→PIM_MAC_AB→SB group
+    // ordering required by the all-bank FFN path — a wide window there would
+    // interleave records from different groups and corrupt the rank-mode state.
+    const bool parallelizable =
+        (record.opcode == "PIM_MAC") && !record.bank_sequence.empty();
+    const int64_t record_inflight_cap =
+        parallelizable ? m_max_inflight_requests : 1;
+    if (m_inflight_requests >= record_inflight_cap) {
       return;
     }
 
-    const OpcodeRecord& record = m_records[m_curr_record_idx];
     if (m_curr_repeat_idx >= record.repeat) {
       m_curr_record_idx++;
       m_curr_repeat_idx = 0;
@@ -149,19 +187,28 @@ class LPDDR5PIMConcreteTrace : public IFrontEnd, public Implementation {
 
     std::string line;
     int line_num = 0;
+    bool header_parsed = false;
     while (std::getline(trace_file, line)) {
       line_num++;
       if (line.empty()) {
         continue;
-      }
-      if (static_cast<int>(m_records.size()) >= m_max_records) {
-        throw std::runtime_error(fmt::format("LPDDR5PIMConcreteTrace: {} exceeds max_records {}", file_path_str, m_max_records));
       }
       YAML::Node node;
       try {
         node = YAML::Load(line);
       } catch (const YAML::Exception& exc) {
         throw std::runtime_error(fmt::format("LPDDR5PIMConcreteTrace: {} line {} parse error: {}", file_path_str, line_num, exc.what()));
+      }
+      // The first non-empty line is the v0.2 header envelope: it carries the
+      // file-level constants (schema_version + provenance) asserted once here
+      // instead of being repeated on every record.
+      if (!header_parsed) {
+        parse_header(node, file_path_str, line_num);
+        header_parsed = true;
+        continue;
+      }
+      if (static_cast<int>(m_records.size()) >= m_max_records) {
+        throw std::runtime_error(fmt::format("LPDDR5PIMConcreteTrace: {} exceeds max_records {}", file_path_str, m_max_records));
       }
       m_records.push_back(parse_record(node, file_path_str, line_num));
       s_records_loaded++;
@@ -170,11 +217,25 @@ class LPDDR5PIMConcreteTrace : public IFrontEnd, public Implementation {
         throw std::runtime_error(fmt::format("LPDDR5PIMConcreteTrace: {} exceeds max_expanded_records {}", file_path_str, m_max_expanded_records));
       }
     }
+    if (!header_parsed) {
+      throw std::runtime_error(fmt::format("LPDDR5PIMConcreteTrace: {} is missing the v0.2 header line", file_path_str));
+    }
+  }
+
+  void parse_header(const YAML::Node& node, const std::string& path, int line_num) {
+    if (node["opcode"]) {
+      throw std::runtime_error(fmt::format("LPDDR5PIMConcreteTrace: {} line {} expected a v0.2 header (schema_version + provenance) but found a record; regenerate the trace as lpddr5-pim-opcode-v0.2", path, line_num));
+    }
+    require_string(node, "schema_version", path, line_num, "lpddr5-pim-opcode-v0.2");
+    require_provenance(node, path, line_num);
   }
 
   OpcodeRecord parse_record(const YAML::Node& node, const std::string& path, int line_num) {
-    require_string(node, "schema_version", path, line_num, "lpddr5-pim-opcode-v0.1");
-    require_present(node, "record_id", path, line_num);
+    // v0.2 records carry only what varies; file-level constants live in the
+    // header.  Reject stale v0.1 records that still embed those fields.
+    if (node["schema_version"] || node["provenance"]) {
+      throw std::runtime_error(fmt::format("LPDDR5PIMConcreteTrace: {} line {} record must not carry schema_version/provenance; regenerate the trace as lpddr5-pim-opcode-v0.2", path, line_num));
+    }
     const std::string opcode = require_string(node, "opcode", path, line_num);
     const int repeat = require_int(node, "repeat", path, line_num);
     if (repeat <= 0) {
@@ -184,7 +245,6 @@ class LPDDR5PIMConcreteTrace : public IFrontEnd, public Implementation {
       throw std::runtime_error(fmt::format("LPDDR5PIMConcreteTrace: {} line {} repeat exceeds max_repeat {}", path, line_num, m_max_repeat));
     }
     AddrVec_t addr_vec = require_addr_vec(node, path, line_num);
-    require_provenance(node, path, line_num);
     int64_t addr_byte = -1;
     int64_t addr_byte_stride = 0;
     if (node["addr_byte"]) {
@@ -250,6 +310,114 @@ class LPDDR5PIMConcreteTrace : public IFrontEnd, public Implementation {
         addr_vec_from_byte_address(addr_byte + static_cast<int64_t>(repeat - 1) * addr_byte_stride);
       }
     }
+
+    // In-memory bank interleaving fields (PIM_MAC only; compact expansion).
+    std::vector<int> bank_sequence;
+    std::vector<int> bank_positions;
+    std::vector<int> bank_counts;
+    int dependency_count = 0;
+    int row_count = 1;
+    int row_start = 0;
+    int column_start = 0;
+    int resolved_row_offset = 0;
+    int resolved_col_offset = 0;
+    int interleave_depth = 4;
+    int interleave_start_idx = 0;
+    int bank_level = 3;
+    int row_level = 4;
+    int col_level = 5;
+
+    if (node["interleave_depth"] || node["bank_sequence"]) {
+      if (opcode != "PIM_MAC") {
+        throw std::runtime_error(fmt::format("LPDDR5PIMConcreteTrace: {} line {} bank interleaving fields are only valid for PIM_MAC", path, line_num));
+      }
+      if (!node["bank_sequence"] || !node["bank_sequence"].IsSequence()) {
+        throw std::runtime_error(fmt::format("LPDDR5PIMConcreteTrace: {} line {} PIM_MAC interleaving requires a non-empty bank_sequence", path, line_num));
+      }
+      for (const auto& entry : node["bank_sequence"]) {
+        int bank = entry.as<int>();
+        if (bank < 0) {
+          throw std::runtime_error(fmt::format("LPDDR5PIMConcreteTrace: {} line {} bank_sequence entries must be non-negative", path, line_num));
+        }
+        bank_sequence.push_back(bank);
+      }
+      if (bank_sequence.empty()) {
+        throw std::runtime_error(fmt::format("LPDDR5PIMConcreteTrace: {} line {} bank_sequence must not be empty", path, line_num));
+      }
+
+      if (node["interleave_depth"]) {
+        interleave_depth = node["interleave_depth"].as<int>();
+        if (interleave_depth < 1) {
+          throw std::runtime_error(fmt::format("LPDDR5PIMConcreteTrace: {} line {} interleave_depth must be >= 1", path, line_num));
+        }
+      }
+
+      dependency_count = require_int(node, "dependency_count", path, line_num);
+      if (dependency_count < 1) {
+        throw std::runtime_error(fmt::format("LPDDR5PIMConcreteTrace: {} line {} dependency_count must be >= 1", path, line_num));
+      }
+
+      if (node["row_count"]) {
+        row_count = node["row_count"].as<int>();
+        if (row_count < 1) {
+          throw std::runtime_error(fmt::format("LPDDR5PIMConcreteTrace: {} line {} row_count must be >= 1", path, line_num));
+        }
+      }
+      if (node["row_start"]) {
+        row_start = node["row_start"].as<int>();
+      }
+      if (node["column_start"]) {
+        column_start = node["column_start"].as<int>();
+      }
+      if (node["resolved_row_offset"]) {
+        resolved_row_offset = node["resolved_row_offset"].as<int>();
+        if (resolved_row_offset < 0 || resolved_row_offset >= row_count) {
+          throw std::runtime_error(fmt::format("LPDDR5PIMConcreteTrace: {} line {} resolved_row_offset must be in [0, row_count)", path, line_num));
+        }
+      }
+      if (node["resolved_col_offset"]) {
+        resolved_col_offset = node["resolved_col_offset"].as<int>();
+        if (resolved_col_offset < 0 || resolved_col_offset >= dependency_count) {
+          throw std::runtime_error(fmt::format("LPDDR5PIMConcreteTrace: {} line {} resolved_col_offset must be in [0, dependency_count)", path, line_num));
+        }
+      }
+
+      if (node["interleave_start_idx"]) {
+        interleave_start_idx = node["interleave_start_idx"].as<int>();
+        if (interleave_start_idx < 0) {
+          throw std::runtime_error(fmt::format("LPDDR5PIMConcreteTrace: {} line {} interleave_start_idx must be non-negative", path, line_num));
+        }
+      }
+
+      if (node["row_level"]) {
+        row_level = node["row_level"].as<int>();
+      }
+      if (node["col_level"]) {
+        col_level = node["col_level"].as<int>();
+      }
+      if (node["bank_level"]) {
+        bank_level = node["bank_level"].as<int>();
+      }
+
+      if (node["bank_positions"] && node["bank_counts"]) {
+        bank_positions = node["bank_positions"].as<std::vector<int>>();
+        bank_counts = node["bank_counts"].as<std::vector<int>>();
+        if (bank_positions.size() != bank_counts.size() || bank_positions.empty()) {
+          throw std::runtime_error(fmt::format("LPDDR5PIMConcreteTrace: {} line {} bank_positions and bank_counts must be non-empty lists of equal length", path, line_num));
+        }
+        for (int pos : bank_positions) {
+          if (pos < 0 || pos >= m_addr_vec_size) {
+            throw std::runtime_error(fmt::format("LPDDR5PIMConcreteTrace: {} line {} bank_positions entries must fit within addr_vec_size", path, line_num));
+          }
+        }
+        for (int cnt : bank_counts) {
+          if (cnt <= 0) {
+            throw std::runtime_error(fmt::format("LPDDR5PIMConcreteTrace: {} line {} bank_counts entries must be positive", path, line_num));
+          }
+        }
+      }
+    }
+
     return OpcodeRecord{
         .opcode = opcode,
         .addr_vec = std::move(addr_vec),
@@ -257,7 +425,22 @@ class LPDDR5PIMConcreteTrace : public IFrontEnd, public Implementation {
         .command_id = command_id,
         .repeat = repeat,
         .addr_byte = addr_byte,
-        .addr_byte_stride = addr_byte_stride};
+        .addr_byte_stride = addr_byte_stride,
+        .bank_sequence = std::move(bank_sequence),
+        .bank_positions = std::move(bank_positions),
+        .bank_counts = std::move(bank_counts),
+        .dependency_count = dependency_count,
+        .row_count = row_count,
+        .row_start = row_start,
+        .column_start = column_start,
+        .resolved_row_offset = resolved_row_offset,
+        .resolved_col_offset = resolved_col_offset,
+        .interleave_depth = interleave_depth,
+        .interleave_start_idx = interleave_start_idx,
+        .bank_level = bank_level,
+        .row_level = row_level,
+        .col_level = col_level,
+    };
   }
 
   void validate_sequence() const {
@@ -311,6 +494,38 @@ class LPDDR5PIMConcreteTrace : public IFrontEnd, public Implementation {
       host_addr = record.addr_byte + static_cast<int64_t>(m_curr_repeat_idx) * record.addr_byte_stride;
       addr_vec = addr_vec_from_byte_address(host_addr);
     }
+
+    // In-memory bank interleaving: expand one compact PIM_MAC record into N
+    // interleaved issues.  Mirror the validated synthetic frontend's
+    // pim_addr_vec(record, idx) rotation, with interleave_depth > 1 keeping
+    // D ops on the same bank before switching.
+    if ((record.opcode == "PIM_MAC") && !record.bank_sequence.empty()) {
+      const int idx = record.interleave_start_idx + m_curr_repeat_idx;
+      const int D = record.interleave_depth;
+      const int span = static_cast<int>(record.bank_sequence.size());
+      const int group = idx / D;
+      const int flat_bank = record.bank_sequence[group % span];
+      const int cycle = group / span;
+
+      const int col = record.column_start
+          + ((record.resolved_col_offset + cycle) % record.dependency_count);
+      const int row = record.row_start
+          + ((record.resolved_row_offset + cycle / record.dependency_count) % record.row_count);
+
+      addr_vec[record.col_level] = col;
+      addr_vec[record.row_level] = row;
+
+      if (!record.bank_positions.empty()) {
+        int remaining = flat_bank;
+        for (int i = static_cast<int>(record.bank_positions.size()) - 1; i >= 0; i--) {
+          addr_vec[record.bank_positions[i]] = remaining % record.bank_counts[i];
+          remaining /= record.bank_counts[i];
+        }
+      } else {
+        addr_vec[record.bank_level] = flat_bank;
+      }
+    }
+
     if (record.command_id >= 0) {
       req = Request(addr_vec, Request::Cmd, record.command_id);
     } else {

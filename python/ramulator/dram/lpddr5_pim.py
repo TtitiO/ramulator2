@@ -9,7 +9,6 @@ PIM_EVENT_ENERGY_FIELDS = [
     "pim_compute_energy_pJ_per_mac",
     "pim_array_local_energy_pJ",
     "pim_cell_to_pim_energy_pJ_per_256b",
-    "pim_interconnect_energy_pJ_per_256b",
     "pim_vrf_access_energy_pJ",
     "pim_srf_access_energy_pJ",
     "pim_mode_switch_energy_pJ",
@@ -78,9 +77,37 @@ PIM_MAC_EXECUTION_MODELS = {
     "subbank_overlap_experimental",
 }
 
-for resource in PIM_DATATYPE_METADATA.values():
-    for energy_field in PIM_EVENT_ENERGY_FIELDS:
-        resource[energy_field] = 0.0
+# Literature-anchored energy defaults:
+#   compute:   int8=0.35 pJ/MAC (CD-PIM, LPDDR5-PIM-native)
+#              fp16=0.69, int16/bf16=0.55 (P3-LLM/LP-Spec ratios)
+#   movement:  cell_to_pim=686.08 pJ/256b (O'Connor ePre+ePost-GSA 2.68 pJ/bit)
+#   RF access: vrf=3.17 pJ, srf=0.40 pJ (WAX Eyeriss-style 0.099 pJ/B)
+#   mode_switch_energy: 0.0 (no public number)
+#   array_local_energy: 0.0 (folded into movement; charged in layer-1)
+#
+# Per-bank PIM_MAC energy does NOT include rank-level bus energy (JEDEC
+# IDD0-IDD2N × nBL). Rank-level bus energy for PIM_BCAST is accounted
+# by the inherited LPDDR5 power model.
+_PIM_ENERGY_DEFAULTS_BY_DTYPE: dict[str, dict[str, float]] = {
+    "int8":  {"pim_compute_energy_pJ_per_mac": 0.35},
+    "fp16":  {"pim_compute_energy_pJ_per_mac": 0.69},
+    "int16": {"pim_compute_energy_pJ_per_mac": 0.55},
+    "bf16":  {"pim_compute_energy_pJ_per_mac": 0.55},
+}
+_PIM_ENERGY_SHARED_DEFAULTS: dict[str, float] = {
+    "pim_array_local_energy_pJ":           0.0,
+    "pim_cell_to_pim_energy_pJ_per_256b":  686.08,
+    "pim_vrf_access_energy_pJ":            3.17,
+    "pim_srf_access_energy_pJ":            0.40,
+    "pim_mode_switch_energy_pJ":           0.0,
+}
+
+for _dtype, _resource in PIM_DATATYPE_METADATA.items():
+    for _field in PIM_EVENT_ENERGY_FIELDS:
+        _resource[_field] = (
+            _PIM_ENERGY_DEFAULTS_BY_DTYPE.get(_dtype, {}).get(_field)
+            or _PIM_ENERGY_SHARED_DEFAULTS[_field]
+        )
 
 
 class LPDDR5PIM(LPDDR5):
@@ -112,26 +139,21 @@ class LPDDR5PIM(LPDDR5):
         "HAB_PIM": "nBL",
         "SB": "nBL",
     }
-    # PIM_MAC/PIM_MAC_AB incremental energy is explicit and parameterized.
-    # Do not proxy PIM compute with JEDEC host-read current (IDD4R - IDD3N):
-    # active-bank background is already charged by the inherited LPDDR5 IDD3N
-    # background model, while PIM-specific array/local-transfer/compute/RF
-    # costs must come from user- or literature-supplied coefficients.
+    # PIM_MAC/PIM_MAC_AB energy uses explicit event coefficients; inherited
+    # LPDDR5 IDD3N background covers active-bank current.
     _pim_mac_event_energy_expr = (
         "pim_array_local_energy_pJ + "
         "pim_lanes * pim_compute_energy_pJ_per_mac + "
         "pim_cell_to_pim_energy_pJ_per_256b + "
-        "pim_interconnect_energy_pJ_per_256b + "
         "pim_vrf_access_energy_pJ + "
         "pim_srf_access_energy_pJ"
     )
-    # Bounded attribution only: PIM_BCAST models all-bank setup/broadcast
-    # pressure. Public Samsung-style PIM sources describe this as HAB/all-bank
-    # WR-like broadcast behavior; these event terms are not silicon-calibrated.
+    # PIM_BCAST adds bank-local cell-to-PIM movement; rank-level bus energy
+    # is accounted by the inherited LPDDR5 (IDD0-IDD2N) × nBL model.
     power_incremental_command_event_energy_exprs = {
         "PIM_MAC": _pim_mac_event_energy_expr,
         "PIM_MAC_AB": _pim_mac_event_energy_expr,
-        "PIM_BCAST": "pim_cell_to_pim_energy_pJ_per_256b + pim_interconnect_energy_pJ_per_256b",
+        "PIM_BCAST": "pim_cell_to_pim_energy_pJ_per_256b",
         "HAB": "pim_mode_switch_energy_pJ",
         "HAB_PIM": "pim_mode_switch_energy_pJ",
         "SB": "pim_mode_switch_energy_pJ",
@@ -257,7 +279,6 @@ class LPDDR5PIM(LPDDR5):
         pim_compute_energy_pJ_per_mac=None,
         pim_array_local_energy_pJ=None,
         pim_cell_to_pim_energy_pJ_per_256b=None,
-        pim_interconnect_energy_pJ_per_256b=None,
         pim_vrf_access_energy_pJ=None,
         pim_srf_access_energy_pJ=None,
         pim_mode_switch_energy_pJ=None,
@@ -319,7 +340,6 @@ class LPDDR5PIM(LPDDR5):
             "pim_compute_energy_pJ_per_mac": pim_compute_energy_pJ_per_mac,
             "pim_array_local_energy_pJ": pim_array_local_energy_pJ,
             "pim_cell_to_pim_energy_pJ_per_256b": pim_cell_to_pim_energy_pJ_per_256b,
-            "pim_interconnect_energy_pJ_per_256b": pim_interconnect_energy_pJ_per_256b,
             "pim_vrf_access_energy_pJ": pim_vrf_access_energy_pJ,
             "pim_srf_access_energy_pJ": pim_srf_access_energy_pJ,
             "pim_mode_switch_energy_pJ": pim_mode_switch_energy_pJ,

@@ -38,7 +38,6 @@ void DRAMSpec::load_config(const ConfigNode& config) {
   pim_compute_energy_pJ_per_mac = dram["pim_compute_energy_pJ_per_mac"].as<double>(0.0);
   pim_array_local_energy_pJ = dram["pim_array_local_energy_pJ"].as<double>(0.0);
   pim_cell_to_pim_energy_pJ_per_256b = dram["pim_cell_to_pim_energy_pJ_per_256b"].as<double>(0.0);
-  pim_interconnect_energy_pJ_per_256b = dram["pim_interconnect_energy_pJ_per_256b"].as<double>(0.0);
   pim_vrf_access_energy_pJ = dram["pim_vrf_access_energy_pJ"].as<double>(0.0);
   pim_srf_access_energy_pJ = dram["pim_srf_access_energy_pJ"].as<double>(0.0);
   pim_mode_switch_energy_pJ = dram["pim_mode_switch_energy_pJ"].as<double>(0.0);
@@ -73,7 +72,7 @@ void DRAMSpec::load_config(const ConfigNode& config) {
     throw std::runtime_error("DRAMSpec: pim_banks_per_mpu must be positive");
   }
   if (pim_compute_energy_pJ_per_mac < 0.0 || pim_array_local_energy_pJ < 0.0 ||
-      pim_cell_to_pim_energy_pJ_per_256b < 0.0 || pim_interconnect_energy_pJ_per_256b < 0.0 ||
+      pim_cell_to_pim_energy_pJ_per_256b < 0.0 ||
       pim_vrf_access_energy_pJ < 0.0 || pim_srf_access_energy_pJ < 0.0 || pim_mode_switch_energy_pJ < 0.0) {
     throw std::runtime_error("DRAMSpec: PIM event energy terms must be non-negative");
   }

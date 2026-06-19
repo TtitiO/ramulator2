@@ -42,6 +42,10 @@ LLAMA2_7B_HEAD_DIM = 128
 LLAMA2_7B_HIDDEN_SIZE = 4096
 LLAMA2_7B_FFN_HIDDEN_SIZE = 11008
 LLAMA2_7B_DEFAULT_PAST_LEN = 1024
+# The 8Gb LPDDR5-PIM preset exposes 16 bank units (one rank). Dense transformer
+# manifests round-robin PIM_MAC work across all 16 banks so the per-bank (k=1)
+# vs shared-MPU (k=2) comparison matches the F4/F5/F6 device configuration.
+DENSE_PIM_BANK_SEQUENCE = list(range(16))
 LLAMA2_13B_NUM_LAYERS = 40
 LLAMA2_13B_NUM_HEADS = 40
 LLAMA2_13B_HEAD_DIM = 128
@@ -202,64 +206,6 @@ class ModelSpec:
         if self.paper_anchor is None:
             object.__setattr__(self, "paper_anchor", self.citation)
 
-
-@dataclass(frozen=True)
-class DecodeTraceScope:
-    seq_len: int
-    past_len: int
-    include_qkvo_projections: bool
-    score_tile_tokens: int
-    context_tile_tokens: int
-
-    @classmethod
-    def llama2_7b_decode_v2(cls) -> "DecodeTraceScope":
-        return cls(
-            seq_len=1,
-            past_len=LLAMA2_7B_DEFAULT_PAST_LEN,
-            include_qkvo_projections=True,
-            score_tile_tokens=256,
-            context_tile_tokens=256,
-        )
-
-    @classmethod
-    def llama2_13b_decode_v2(cls) -> "DecodeTraceScope":
-        return cls(
-            seq_len=1,
-            past_len=LLAMA2_13B_DEFAULT_PAST_LEN,
-            include_qkvo_projections=True,
-            score_tile_tokens=256,
-            context_tile_tokens=256,
-        )
-
-
-@dataclass(frozen=True)
-class PrefillTraceScope:
-    prompt_len: int
-    include_qkvo_projections: bool = True
-    score_tile_tokens: int = 256
-    context_tile_tokens: int = 256
-
-    def __post_init__(self):
-        if self.prompt_len <= 0:
-            raise ValueError("PrefillTraceScope prompt_len must be positive")
-        if self.score_tile_tokens <= 0 or self.context_tile_tokens <= 0:
-            raise ValueError("PrefillTraceScope tile sizes must be positive")
-        if self.score_tile_tokens > self.prompt_len or self.context_tile_tokens > self.prompt_len:
-            raise ValueError("PrefillTraceScope tile sizes must be <= prompt_len")
-
-    @property
-    def seq_len(self) -> int:
-        return self.prompt_len
-
-    @classmethod
-    def llama2_7b_prefill(cls, prompt_len: int = 128) -> "PrefillTraceScope":
-        tile_tokens = min(256, prompt_len)
-        return cls(
-            prompt_len=prompt_len,
-            include_qkvo_projections=True,
-            score_tile_tokens=tile_tokens,
-            context_tile_tokens=tile_tokens,
-        )
 
 LLAMA2_7B_MODEL_SPEC = ModelSpec(
     name="Llama2-7B",
@@ -686,7 +632,7 @@ def get_llama2_dense_decoder_attention_manifest(
             "ffn_intermediate": "bank_local_capacity_controlled",
         },
         "ramulator_visible_defaults": {
-            "bank_sequence": [0, 1, 2, 3],
+            "bank_sequence": list(DENSE_PIM_BANK_SEQUENCE),
             "bank_sequence_order": "frontend",
             "pim_banks_per_mpu": 1,
             "burst_length": 1,
@@ -743,7 +689,7 @@ def get_llama2_dense_decoder_ffn_manifest(
             "ffn_intermediate": "bank_local_capacity_controlled",
         },
         "ramulator_visible_defaults": {
-            "bank_sequence": [0, 1, 2, 3],
+            "bank_sequence": list(DENSE_PIM_BANK_SEQUENCE),
             "bank_sequence_order": "frontend",
             "pim_banks_per_mpu": 1,
             "burst_length": 1,
@@ -879,9 +825,7 @@ def get_llama2_13b_dense_decoder_manifests(
     )
 
 
-# ═══════════════════════════════════════════════════════════════════════
-# Mixtral-8x7B MoE decoder manifests  (full 32-layer, GQA attention)
-# ═══════════════════════════════════════════════════════════════════════
+# -- Mixtral-8x7B MoE decoder manifests (full 32-layer, GQA attention) ---
 
 def _mixtral_ramulator_defaults() -> dict:
     return {
@@ -3677,27 +3621,6 @@ def generate_mixtral_8x7b_decoder_records(
     )
 
 
-def generate_full_transformer_layer_records(
-    *,
-    attention_manifest: dict | None = None,
-    ffn_manifest: dict | None = None,
-    moe_manifest: dict | None = None,
-) -> list[dict]:
-    components = [
-        generate_attention_records(get_tiny_attention_manifest() if attention_manifest is None else attention_manifest),
-        generate_ffn_records(get_tiny_ffn_manifest() if ffn_manifest is None else ffn_manifest),
-        generate_moe_records(get_tiny_moe_manifest() if moe_manifest is None else moe_manifest),
-    ]
-    combined: list[dict] = []
-    next_id = 0
-    for component in components:
-        renumbered, next_id = _renumber_records(component, next_id)
-        combined.extend(renumbered)
-    for record in combined:
-        validate_record(record)
-    return combined
-
-
 def _generate_decode_v2_qkvo_projection_records(
     manifest: dict,
     *,
@@ -4060,19 +3983,6 @@ def generate_dense_prefill_records_for_model(
     return generate_dense_prefill_records_from_spec(
         get_model_spec(model_name), prompt_len=prompt_len, schedule_policy=schedule_policy
     )
-
-
-def generate_llama2_7b_dense_prefill_records(
-    *,
-    prompt_len: int = 1024,
-    attention_manifest: dict | None = None,
-    ffn_manifest: dict | None = None,
-) -> list[dict]:
-    if attention_manifest is None or ffn_manifest is None:
-        default_attention, default_ffn = get_dense_prefill_manifests(LLAMA2_7B_MODEL_SPEC, prompt_len=prompt_len)
-        attention_manifest = default_attention if attention_manifest is None else attention_manifest
-        ffn_manifest = default_ffn if ffn_manifest is None else ffn_manifest
-    return generate_dense_prefill_transformer_layer_records(attention_manifest=attention_manifest, ffn_manifest=ffn_manifest)
 
 
 def get_dense_decoder_manifests(
