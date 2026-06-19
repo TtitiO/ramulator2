@@ -98,26 +98,9 @@ def concrete_provenance(*, source_kind: str = "generated", manifest_name: str = 
     }
 
 
-def _validate_provenance(provenance: object) -> None:
-    if not isinstance(provenance, dict):
-        raise ValueError("Concrete opcode provenance must be a map")
-    for key in ("source_kind", "manifest", "generator_version", "claim_boundary", "non_claims"):
-        if key not in provenance:
-            raise ValueError(f"Concrete opcode provenance missing required field: {key}")
-    for claim in REQUIRED_BOUNDARY_CLAIMS:
-        if claim not in provenance["claim_boundary"]:
-            raise ValueError(f"Concrete opcode provenance.claim_boundary missing {claim!r}")
-    for non_claim in DEFAULT_NON_CLAIMS:
-        if non_claim not in provenance["non_claims"]:
-            raise ValueError(f"Concrete opcode provenance.non_claims missing {non_claim!r}")
-
-
-def build_header(provenance: dict | None = None) -> dict:
-    """Build the v0.2 trace header envelope (constants asserted once per file)."""
-    header = {
-        "schema_version": CONCRETE_SCHEMA_VERSION,
-        "provenance": concrete_provenance() if provenance is None else provenance,
-    }
+def build_header() -> dict:
+    """Build the v0.2 trace header envelope (asserted once per file)."""
+    header = {"schema_version": CONCRETE_SCHEMA_VERSION}
     validate_header(header)
     return header
 
@@ -125,9 +108,6 @@ def build_header(provenance: dict | None = None) -> dict:
 def validate_header(header: dict) -> None:
     if header.get("schema_version") != CONCRETE_SCHEMA_VERSION:
         raise ValueError(f"Unsupported concrete opcode schema_version: {header.get('schema_version')}")
-    if "provenance" not in header:
-        raise ValueError("Concrete opcode header missing required field: provenance")
-    _validate_provenance(header["provenance"])
 
 
 def validate_record(record: dict) -> None:
@@ -271,16 +251,7 @@ def expanded_record_count(records: list[dict]) -> int:
 
 
 # Fields that are file-level constants (header) or human prose; never per-record in v0.2.
-_HEADER_PROVENANCE_DROP = {"semantic_source", "notes"}
 _SLIM_DROP = {"schema_version", "record_id", "notes", "provenance"}
-
-
-def header_provenance_from_record(record: dict) -> dict:
-    """Extract the constant provenance block from a rich in-memory record."""
-    provenance = dict(record.get("provenance") or concrete_provenance())
-    for key in _HEADER_PROVENANCE_DROP:
-        provenance.pop(key, None)
-    return provenance
 
 
 def slim_record(record: dict) -> dict:
@@ -299,7 +270,7 @@ def slim_record(record: dict) -> dict:
 
 
 def write_jsonl(records: list[dict], output_path: Path) -> None:
-    header = build_header(header_provenance_from_record(records[0]) if records else None)
+    header = build_header()
     slim_records = [slim_record(record) for record in records]
     validate_sequence(slim_records)
     output_path.parent.mkdir(parents=True, exist_ok=True)

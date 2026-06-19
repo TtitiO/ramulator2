@@ -224,10 +224,9 @@ class LPDDR5PIMConcreteTrace : public IFrontEnd, public Implementation {
 
   void parse_header(const YAML::Node& node, const std::string& path, int line_num) {
     if (node["opcode"]) {
-      throw std::runtime_error(fmt::format("LPDDR5PIMConcreteTrace: {} line {} expected a v0.2 header (schema_version + provenance) but found a record; regenerate the trace as lpddr5-pim-opcode-v0.2", path, line_num));
+      throw std::runtime_error(fmt::format("LPDDR5PIMConcreteTrace: {} line {} expected a v0.2 header (schema_version) but found a record; regenerate the trace as lpddr5-pim-opcode-v0.2", path, line_num));
     }
     require_string(node, "schema_version", path, line_num, "lpddr5-pim-opcode-v0.2");
-    require_provenance(node, path, line_num);
   }
 
   OpcodeRecord parse_record(const YAML::Node& node, const std::string& path, int line_num) {
@@ -639,42 +638,6 @@ class LPDDR5PIMConcreteTrace : public IFrontEnd, public Implementation {
       }
     }
     return addr_vec;
-  }
-
-  static void require_provenance(const YAML::Node& node, const std::string& path, int line_num) {
-    require_present(node, "provenance", path, line_num);
-    YAML::Node provenance = node["provenance"];
-    if (!provenance.IsMap()) {
-      throw std::runtime_error(fmt::format("LPDDR5PIMConcreteTrace: {} line {} provenance must be a map", path, line_num));
-    }
-    require_present(provenance, "claim_boundary", path, line_num);
-    require_present(provenance, "non_claims", path, line_num);
-    require_sequence_contains(provenance["claim_boundary"], "native-lpddr5-pim-concrete-opcode-replay", "provenance.claim_boundary", path, line_num);
-    require_sequence_contains(provenance["claim_boundary"], "backend-specific-command-validation", "provenance.claim_boundary", path, line_num);
-    require_sequence_contains(provenance["claim_boundary"], "simulator-diagnostic", "provenance.claim_boundary", path, line_num);
-    require_sequence_contains(provenance["claim_boundary"], "non-silicon-calibrated", "provenance.claim_boundary", path, line_num);
-    require_sequence_contains(provenance["non_claims"], "not_semantic_workload_replay", "provenance.non_claims", path, line_num);
-    require_sequence_contains(provenance["non_claims"], "not_runtime_replay", "provenance.non_claims", path, line_num);
-    require_sequence_contains(provenance["non_claims"], "not_vllm_replay", "provenance.non_claims", path, line_num);
-    require_sequence_contains(provenance["non_claims"], "not_raw_attacc_schema", "provenance.non_claims", path, line_num);
-    require_sequence_contains(provenance["non_claims"], "not_silicon_faithful_pim_bcast_source_or_timing", "provenance.non_claims", path, line_num);
-  }
-
-  static void require_sequence_contains(
-      const YAML::Node& node,
-      const std::string& expected,
-      const std::string& field,
-      const std::string& path,
-      int line_num) {
-    if (!node.IsSequence()) {
-      throw std::runtime_error(fmt::format("LPDDR5PIMConcreteTrace: {} line {} {} must be a sequence", path, line_num, field));
-    }
-    for (const YAML::Node& entry : node) {
-      if (entry.as<std::string>() == expected) {
-        return;
-      }
-    }
-    throw std::runtime_error(fmt::format("LPDDR5PIMConcreteTrace: {} line {} {} missing '{}'", path, line_num, field, expected));
   }
 };
 
