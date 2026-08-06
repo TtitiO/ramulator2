@@ -38,10 +38,10 @@ class CountingBloomFilter {
   CountingBloomFilter(int num_counters, int ctr_thresh, bool saturate,
                       const std::vector<bloom_hash_fn>& hash_functions)
       : m_hash_functions(hash_functions),
-        m_counters(num_counters, 0) {
-    this->m_num_counters = num_counters;
-    this->m_ctr_thresh = ctr_thresh;
-    this->m_saturate = m_saturate;
+        m_counters(num_counters, 0),
+        m_num_counters(num_counters),
+        m_ctr_thresh(ctr_thresh),
+        m_saturate(saturate) {
   }
 
   void insert(int elem) {
