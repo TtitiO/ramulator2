@@ -95,6 +95,9 @@ void DRAMNode::update_powers(int command, const AddrVec_t& addr_vec, Clk_t clk) 
   if (!m_spec->drampower_enable || (m_spec->powers.empty() && m_spec->powers_incremental.empty())) {
     return;
   }
+  if (m_node_id != addr_vec[m_level] && addr_vec[m_level] != -1) {
+    return;
+  }
 
   if (m_level < static_cast<int>(m_spec->powers.size()) &&
       command < static_cast<int>(m_spec->powers[m_level].size())) {
@@ -117,13 +120,13 @@ void DRAMNode::update_powers(int command, const AddrVec_t& addr_vec, Clk_t clk) 
   }
 
   int child_level = m_level + 1;
-  int child_id = addr_vec[child_level];
-  if (child_id == -1) {
+  int target_child_id = addr_vec[child_level];
+  if (target_child_id == -1) {
     for (auto& child : m_child_nodes) {
       child->update_powers(command, addr_vec, clk);
     }
   } else {
-    m_child_nodes[child_id]->update_powers(command, addr_vec, clk);
+    m_child_nodes[target_child_id]->update_powers(command, addr_vec, clk);
   }
 }
 

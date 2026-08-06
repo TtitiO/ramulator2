@@ -7,7 +7,14 @@ See the README validation and regression test section and
 from dataclasses import dataclass
 
 import ramulator
-from ramulator._ramulator_test import _ControllerUnderTest as _CppControllerUnderTest
+
+try:
+    from ramulator._ramulator_test import _ControllerUnderTest as _CppControllerUnderTest
+except ImportError as exc:  # pragma: no cover - exercised by minimal installs
+    raise ImportError(
+        "Controller scheduling tests require the optional _ramulator_test binding. "
+        "Configure with -DRAMULATOR_TEST_BINDINGS=ON."
+    ) from exc
 from tests.validation_common import _metadata_from_dram
 from tests.validation_common import _request_type_ids
 from tests.validation_common import build_addr_vec

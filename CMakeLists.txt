@@ -53,6 +53,10 @@ include_directories(${fmt_SOURCE_DIR}/include)
 message("Done configuring fmt.")
 
 option(RAMULATOR_PYTHON_BINDINGS "Build Python nanobind bindings" ON)
+option(RAMULATOR_TEST_BINDINGS "Build the Python test harness binding" OFF)
+if(RAMULATOR_TEST_BINDINGS AND NOT RAMULATOR_PYTHON_BINDINGS)
+  message(FATAL_ERROR "RAMULATOR_TEST_BINDINGS requires RAMULATOR_PYTHON_BINDINGS=ON")
+endif()
 if(RAMULATOR_PYTHON_BINDINGS)
   find_package(Python 3.10 REQUIRED COMPONENTS Interpreter Development.Module)
 
@@ -121,10 +125,12 @@ if(RAMULATOR_PYTHON_BINDINGS)
     LIBRARY_OUTPUT_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/python/ramulator
   )
 
-  nanobind_add_module(_ramulator_test tests/utils/test_harness.cpp)
-  target_link_libraries(_ramulator_test PRIVATE ramulator)
-  target_include_directories(_ramulator_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
-  set_target_properties(_ramulator_test PROPERTIES
-    LIBRARY_OUTPUT_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/python/ramulator
-  )
+  if(RAMULATOR_TEST_BINDINGS)
+    nanobind_add_module(_ramulator_test tests/utils/test_harness.cpp)
+    target_link_libraries(_ramulator_test PRIVATE ramulator)
+    target_include_directories(_ramulator_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    set_target_properties(_ramulator_test PROPERTIES
+      LIBRARY_OUTPUT_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/python/ramulator
+    )
+  endif()
 endif()

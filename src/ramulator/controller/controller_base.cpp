@@ -139,6 +139,10 @@ bool ControllerBase::send(Request& req) {
   m_addr_mapper->apply(req);
   req.addr_vec[0] = m_channel_id;
 
+  if (req.type_id < 0 || req.type_id >= static_cast<int>(m_device.m_spec->supported_requests.size())) {
+    throw std::runtime_error(fmt::format("ControllerBase: request type id {} is outside supported range [0, {})",
+                                         req.type_id, m_device.m_spec->supported_requests.size()));
+  }
   req.final_command = m_device.m_spec->supported_requests[req.type_id];
 
   // Forward existing write requests to incoming read requests

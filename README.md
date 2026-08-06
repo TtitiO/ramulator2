@@ -497,6 +497,13 @@ PYTHONPATH=python pytest tests/smoke -q
 
 This is the fastest confidence check after a build or a local code change.
 
+The default build omits the private `_ramulator_test` harness module because normal users do not need it. Before running `tests/device_timings` or `tests/controller_scheduling`, configure with:
+
+```bash
+cmake .. -DRAMULATOR_TEST_BINDINGS=ON
+cmake --build . -j"$(nproc)"
+```
+
 ### 5.3 Fast Latency-Throughput
 
 Fast latency-throughput is the main modeling-fidelity check used in regular development. It should finish in just a few minutes.
