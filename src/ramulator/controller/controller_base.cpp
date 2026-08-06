@@ -127,6 +127,8 @@ void ControllerBase::setup_base(IFrontEnd* frontend, IMemorySystem* memory_syste
   m_stats.add("read_throughput_MBps", s_read_throughput_MBps);
   m_stats.add("write_throughput_MBps", s_write_throughput_MBps);
   m_stats.add("total_throughput_MBps", s_total_throughput_MBps);
+
+  m_device.m_spec->register_power_stats(m_stats);
 }
 
 // ── IController overrides ───────────────────────────────────────────────
@@ -240,6 +242,8 @@ void ControllerBase::retire_request(ReqBuffer::iterator& req_it, ReqBuffer& buff
       req_it->callback(*req_it);
     }
     s_num_write_reqs_served++;
+  } else if (req_it->callback) {
+    req_it->callback(*req_it);
   } else if (req_it->type_id == -1) {
     s_num_maintenance_reqs_served++;
   }
@@ -428,6 +432,7 @@ void ControllerBase::update_stats() {
 }
 
 void ControllerBase::finalize() {
+  m_device.finalize_power(m_clk);
   update_stats();
 }
 

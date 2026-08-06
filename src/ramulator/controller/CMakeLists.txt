@@ -54,6 +54,7 @@ target_sources(
   impl/lpddr_controller_base.h
   impl/lpddr_controller_base.cpp
   impl/lpddr5_controller.cpp
+  impl/lpddr5_pim_controller.cpp
   impl/lpddr6_controller.cpp
   impl/hbm_controller_base.h
   impl/hbm_controller_base.cpp

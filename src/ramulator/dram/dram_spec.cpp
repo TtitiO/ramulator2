@@ -5,6 +5,140 @@ namespace Ramulator {
 void DRAMSpec::load_config(const ConfigNode& config) {
   const ConfigNode dram = config["dram"];
 
+  // PIM fields are serialized only by PIM-capable standards. Keep defensive
+  // validation here because native callers can bypass the Python DSL.
+  pim_blocks_per_bank = dram["pim_blocks_per_bank"].as<int>(1);
+  pim_banks_per_mpu = dram["pim_banks_per_mpu"].as<int>(2);
+  pim_mac_execution_model = dram["pim_mac_execution_model"].as<std::string>("shared_mpu_serial");
+  if (pim_mac_execution_model != "shared_mpu_serial" && pim_mac_execution_model != "subbank_overlap_experimental") {
+    throw std::runtime_error("DRAMSpec: unknown pim_mac_execution_model '" + pim_mac_execution_model +
+                             "'; supported values: shared_mpu_serial, subbank_overlap_experimental");
+  }
+  pim_datatype = dram["pim_datatype"].as<std::string>("int8");
+  pim_datatype_class = dram["pim_datatype_class"].as<std::string>(pim_datatype);
+  if (pim_datatype_class.empty()) {
+    pim_datatype_class = pim_datatype;
+  }
+  pim_datatype_behavior_enabled = dram["pim_datatype_behavior_enabled"].as<bool>(false);
+  const bool is_pim_standard = commands.count("PIM_MAC") != 0;
+  if (is_pim_standard) {
+    const auto supported_datatype = [](const std::string& datatype) {
+      return datatype == "int8" || datatype == "fp16" || datatype == "int16" || datatype == "bf16";
+    };
+    if (!supported_datatype(pim_datatype)) {
+      throw std::runtime_error("DRAMSpec: unknown pim_datatype '" + pim_datatype +
+                               "'; supported values: int8, fp16, int16, bf16");
+    }
+    if (!supported_datatype(pim_datatype_class)) {
+      throw std::runtime_error("DRAMSpec: unknown pim_datatype_class '" + pim_datatype_class +
+                               "'; supported values: int8, fp16, int16, bf16");
+    }
+    if (pim_datatype_class != pim_datatype) {
+      throw std::runtime_error("DRAMSpec: pim_datatype_class must match pim_datatype");
+    }
+    if (pim_datatype_behavior_enabled && pim_datatype != "int8" && pim_datatype != "fp16") {
+      throw std::runtime_error("DRAMSpec: datatype behavior is source-backed only for int8 and fp16");
+    }
+  }
+  pim_datatype_bits = dram["pim_datatype_bits"].as<int>(8);
+  pim_simd_width_bits = dram["pim_simd_width_bits"].as<int>(256);
+  pim_lanes = dram["pim_lanes"].as<int>(32);
+  pim_ops_per_mac = dram["pim_ops_per_mac"].as<double>(2.0);
+  pim_ops_per_block_issue = dram["pim_ops_per_block_issue"].as<double>(64.0);
+  pim_ops_per_request = dram["pim_ops_per_request"].as<double>(64.0);
+  pim_mac_latency_cycles = dram["pim_mac_latency_cycles"].as<int>(-1);
+  pim_mac_issue_interval_cycles = dram["pim_mac_issue_interval_cycles"].as<int>(-1);
+  pim_mac_pipeline_latency_cycles = dram["pim_mac_pipeline_latency_cycles"].as<int>(pim_mac_latency_cycles);
+  pim_movement_cycles = dram["pim_movement_cycles"].as<int>(1);
+  pim_writeback_cycles = dram["pim_writeback_cycles"].as<int>(0);
+  const ConfigNode slots_per_request_node = dram["pim_slots_per_request"];
+  const ConfigNode legacy_slot_cost_node = dram["pim_slot_cost"];
+  if (slots_per_request_node && legacy_slot_cost_node) {
+    const int slots_per_request = slots_per_request_node.as<int>();
+    const int legacy_slot_cost = legacy_slot_cost_node.as<int>();
+    if (slots_per_request != legacy_slot_cost) {
+      throw std::runtime_error("DRAMSpec: pim_slot_cost is a compatibility alias and must equal pim_slots_per_request");
+    }
+  }
+  pim_slots_per_request = slots_per_request_node ? slots_per_request_node.as<int>() : legacy_slot_cost_node.as<int>(1);
+  pim_slot_cost = pim_slots_per_request;
+  pim_compute_energy_pJ_per_mac = dram["pim_compute_energy_pJ_per_mac"].as<double>(0.0);
+  pim_array_local_energy_pJ = dram["pim_array_local_energy_pJ"].as<double>(0.0);
+  pim_cell_to_pim_energy_pJ_per_256b = dram["pim_cell_to_pim_energy_pJ_per_256b"].as<double>(0.0);
+  pim_vrf_access_energy_pJ = dram["pim_vrf_access_energy_pJ"].as<double>(0.0);
+  pim_srf_access_energy_pJ = dram["pim_srf_access_energy_pJ"].as<double>(0.0);
+  pim_mode_switch_energy_pJ = dram["pim_mode_switch_energy_pJ"].as<double>(0.0);
+  if (pim_blocks_per_bank <= 0) {
+    throw std::runtime_error("DRAMSpec: pim_blocks_per_bank must be positive");
+  }
+  if (pim_datatype_bits <= 0) {
+    throw std::runtime_error("DRAMSpec: pim_datatype_bits must be positive");
+  }
+  if (pim_simd_width_bits <= 0) {
+    throw std::runtime_error("DRAMSpec: pim_simd_width_bits must be positive");
+  }
+  if (pim_simd_width_bits % pim_datatype_bits != 0) {
+    throw std::runtime_error("DRAMSpec: pim_simd_width_bits must be divisible by pim_datatype_bits");
+  }
+  if (pim_lanes <= 0) {
+    throw std::runtime_error("DRAMSpec: pim_lanes must be positive");
+  }
+  const int expected_pim_lanes = pim_simd_width_bits / pim_datatype_bits;
+  if (pim_lanes != expected_pim_lanes) {
+    throw std::runtime_error("DRAMSpec: pim_lanes must equal pim_simd_width_bits / pim_datatype_bits (" +
+                             std::to_string(expected_pim_lanes) + "), got " + std::to_string(pim_lanes));
+  }
+  if (pim_ops_per_mac <= 0.0) {
+    throw std::runtime_error("DRAMSpec: pim_ops_per_mac must be positive");
+  }
+  if (pim_ops_per_block_issue <= 0.0) {
+    throw std::runtime_error("DRAMSpec: pim_ops_per_block_issue must be positive");
+  }
+  if (pim_ops_per_request <= 0.0) {
+    throw std::runtime_error("DRAMSpec: pim_ops_per_request must be positive");
+  }
+  if (pim_movement_cycles < 0) {
+    throw std::runtime_error("DRAMSpec: pim_movement_cycles must be non-negative");
+  }
+  if (pim_writeback_cycles < 0) {
+    throw std::runtime_error("DRAMSpec: pim_writeback_cycles must be non-negative");
+  }
+  if (pim_slots_per_request <= 0) {
+    throw std::runtime_error("DRAMSpec: pim_slots_per_request must be positive");
+  }
+  if (pim_slots_per_request > pim_blocks_per_bank) {
+    throw std::runtime_error("DRAMSpec: pim_slots_per_request must not exceed pim_blocks_per_bank");
+  }
+  if (pim_banks_per_mpu <= 0) {
+    throw std::runtime_error("DRAMSpec: pim_banks_per_mpu must be positive");
+  }
+  if (is_pim_standard &&
+      (pim_mac_issue_interval_cycles <= 0 || pim_mac_pipeline_latency_cycles <= 0)) {
+    throw std::runtime_error("DRAMSpec: PIM MAC pipeline and issue interval cycles must be positive");
+  }
+  if (pim_compute_energy_pJ_per_mac < 0.0 || pim_array_local_energy_pJ < 0.0 ||
+      pim_cell_to_pim_energy_pJ_per_256b < 0.0 || pim_vrf_access_energy_pJ < 0.0 || pim_srf_access_energy_pJ < 0.0 ||
+      pim_mode_switch_energy_pJ < 0.0) {
+    throw std::runtime_error("DRAMSpec: PIM event energy terms must be non-negative");
+  }
+
+  // Optional built-in DRAM power parameters
+  const ConfigNode power = dram["power"];
+  power_params.clear();
+  if (power && power.is_map()) {
+    drampower_enable = power["enabled"].as<bool>(false);
+    power_debug = power["debug"].as<bool>(false);
+    for (const auto& kv : power.map()) {
+      if (kv.first == "enabled" || kv.first == "debug") {
+        continue;
+      }
+      power_params[kv.first] = kv.second.as<double>(0.0);
+    }
+  } else {
+    drampower_enable = false;
+    power_debug = false;
+  }
+
   // Organization
   channel_width = dram["channel_width"].as<int>();
   ConfigNode data_payload_node = dram["data_payload_bytes"];

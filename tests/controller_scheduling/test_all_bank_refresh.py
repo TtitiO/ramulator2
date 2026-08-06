@@ -3,7 +3,6 @@ import pytest
 import ramulator
 import tests.controller_scheduling.harness as cs
 
-
 pytestmark = pytest.mark.controller_scheduling
 
 
@@ -131,6 +130,27 @@ def test_all_bank_refresh_uses_rank_scope_for_ddr4():
         dram,
         refresh_manager=ramulator.refresh_manager.AllBank(),
     )
+
+    ref = _collect_issued(dut, command="REFab", count=1, max_ticks=16)[0]
+
+    assert ref.addr_vec[_level_index(dut, "Rank")] == 0
+    _assert_wildcard_levels(dut, ref, ["BankGroup", "Bank", "Row", "Column"])
+
+
+def test_all_bank_refresh_uses_rank_scope_for_lpddr5_pim():
+    dram = ramulator.dram.LPDDR5PIM(
+        org_preset="LPDDR5_8Gb_x16",
+        timing_preset="LPDDR5_6400",
+        nREFI=4,
+    )
+    controller = ramulator.controller.LPDDR5PIM(
+        dram=dram,
+        scheduler=ramulator.scheduler.FRFCFS(),
+        refresh_manager=ramulator.refresh_manager.AllBank(),
+        row_policy=ramulator.row_policy.Open(),
+        addr_mapper=ramulator.addr_mapper.PassThroughAddrMapper(),
+    )
+    dut = cs.ControllerUnderTest(controller)
 
     ref = _collect_issued(dut, command="REFab", count=1, max_ticks=16)[0]
 

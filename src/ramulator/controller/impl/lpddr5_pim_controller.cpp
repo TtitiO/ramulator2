@@ -147,7 +147,7 @@ class LPDDR5PIMController : public ControllerBase {
   int s_pim_movement_cycles = 1;
   int s_pim_writeback_cycles = 0;
   int s_pim_completion_latency_cycles = 0;
-  int s_pim_ab_mac_latency_cycles = 0;
+  int s_pim_ab_completion_latency_cycles = 0;
   int s_pim_slots_per_request = 1;
   int s_pim_banks_per_mpu = 1;
   int s_pim_mpu_group_count = 0;
@@ -217,13 +217,16 @@ void LPDDR5PIMController::init() {
   m_nAAD = spec.get_timing_value("nAAD");
   m_nCL = spec.get_timing_value("nCL");
   m_nCWL = spec.get_timing_value("nCWL");
-  m_nBL = spec.get_timing_value("nBL");
+  m_nBL = spec.get_timing_value("nBL_min");
   m_nWCKPST = spec.get_timing_value("nWCKPST");
 
   m_activating_buffer.max_size = m_device.m_bank_nodes.size();
   m_act2_owner_valid.assign(m_device.m_bank_nodes.size(), false);
   m_act2_deadline.assign(m_device.m_bank_nodes.size(), -1);
-  m_pim_blocks_per_bank = spec.pim_blocks_per_bank > 0 ? spec.pim_blocks_per_bank : 1;
+  m_pim_blocks_per_bank = spec.pim_blocks_per_bank;
+  if (m_pim_blocks_per_bank <= 0) {
+    throw std::runtime_error("LPDDR5PIMController: pim_blocks_per_bank must be positive");
+  }
   m_pim_banks_per_mpu = spec.pim_banks_per_mpu;
   if (m_pim_banks_per_mpu <= 0) {
     throw std::runtime_error("LPDDR5PIMController: pim_banks_per_mpu must be positive");
@@ -253,7 +256,16 @@ void LPDDR5PIMController::init() {
         m_pim_banks_per_mpu));
   }
   m_pim_mpu_group_count = static_cast<int>(m_device.m_bank_nodes.size()) / m_pim_banks_per_mpu;
-  m_pim_slots_per_request = spec.pim_slots_per_request > 0 ? spec.pim_slots_per_request : 1;
+  m_pim_slots_per_request = spec.pim_slots_per_request;
+  if (m_pim_slots_per_request <= 0) {
+    throw std::runtime_error("LPDDR5PIMController: pim_slots_per_request must be positive");
+  }
+  if (m_pim_slots_per_request > m_pim_blocks_per_bank) {
+    throw std::runtime_error(fmt::format(
+        "LPDDR5PIMController: pim_slots_per_request {} exceeds pim_blocks_per_bank {}",
+        m_pim_slots_per_request,
+        m_pim_blocks_per_bank));
+  }
   if (spec.pim_mac_execution_model == "shared_mpu_serial") {
     m_pim_mac_execution_model = PIMMACExecutionModel::SharedMPUSerial;
   } else if (spec.pim_mac_execution_model == "subbank_overlap_experimental") {
@@ -282,6 +294,7 @@ void LPDDR5PIMController::init() {
   s_pim_movement_cycles = m_pim_movement_cycles;
   s_pim_writeback_cycles = m_pim_writeback_cycles;
   s_pim_completion_latency_cycles = m_pim_completion_latency_cycles;
+  s_pim_ab_completion_latency_cycles = m_pim_completion_latency_cycles * m_pim_banks_per_mpu;
   s_pim_slots_per_request = m_pim_slots_per_request;
   s_pim_banks_per_mpu = m_pim_banks_per_mpu;
   s_pim_mpu_group_count = m_pim_mpu_group_count;
@@ -340,7 +353,7 @@ void LPDDR5PIMController::setup(IFrontEnd* frontend, IMemorySystem* memory_syste
   m_stats.add("pim_movement_cycles", s_pim_movement_cycles);
   m_stats.add("pim_writeback_cycles", s_pim_writeback_cycles);
   m_stats.add("pim_completion_latency_cycles", s_pim_completion_latency_cycles);
-  m_stats.add("pim_ab_mac_latency_cycles", s_pim_ab_mac_latency_cycles);
+  m_stats.add("pim_ab_completion_latency_cycles", s_pim_ab_completion_latency_cycles);
   m_stats.add("pim_slots_per_request", s_pim_slots_per_request);
   m_stats.add("pim_slot_cost", s_pim_slots_per_request);
   m_stats.add("pim_banks_per_mpu", s_pim_banks_per_mpu);
@@ -589,7 +602,7 @@ bool LPDDR5PIMController::would_block_activating(int cmd, const AddrVec_t& addr_
 }
 
 int LPDDR5PIMController::effective_pim_slot_capacity() const {
-  return std::max(m_pim_blocks_per_bank, m_pim_slots_per_request);
+  return m_pim_blocks_per_bank;
 }
 
 bool LPDDR5PIMController::mpu_group_has_inflight_pim(int flat_bank_id, bool exclude_target_bank) const {
@@ -893,9 +906,8 @@ void LPDDR5PIMController::launch_inflight_pim_ab(Candidate cand) {
   // k2 (banks_per_mpu=2): each MPU is time-shared across its banks_per_mpu banks,
   //   walking them serially -> latency = banks_per_mpu * completion_latency.
   // This mirrors LP-Spec's 2-banks-per-MPU sharing vs CD-PIM's dedicated per-bank CU.
-  Clk_t ab_latency = m_pim_completion_latency_cycles * m_pim_banks_per_mpu;
+  Clk_t ab_latency = s_pim_ab_completion_latency_cycles;
   m_pim_ab_done_clk = m_clk + ab_latency;
-  s_pim_ab_mac_latency_cycles = static_cast<int>(ab_latency);
   m_pim_ab_inflight = true;
   m_pim_all_bank_load_ready = false;
   s_num_issued_pim_mac_ab++;

@@ -91,6 +91,42 @@ void DRAMNode::update_timing(int command, const AddrVec_t& addr_vec, Clk_t clk) 
   }
 }
 
+void DRAMNode::update_powers(int command, const AddrVec_t& addr_vec, Clk_t clk) {
+  if (!m_spec->drampower_enable || (m_spec->powers.empty() && m_spec->powers_incremental.empty())) {
+    return;
+  }
+
+  if (m_level < static_cast<int>(m_spec->powers.size()) &&
+      command < static_cast<int>(m_spec->powers[m_level].size())) {
+    auto power_fn = m_spec->powers[m_level][command];
+    if (power_fn) {
+      power_fn(this, command, addr_vec, clk);
+    }
+  }
+
+  if (m_level < static_cast<int>(m_spec->powers_incremental.size()) &&
+      command < static_cast<int>(m_spec->powers_incremental[m_level].size())) {
+    auto power_fn = m_spec->powers_incremental[m_level][command];
+    if (power_fn) {
+      power_fn(this, command, addr_vec, clk);
+    }
+  }
+
+  if (m_child_nodes.empty()) {
+    return;
+  }
+
+  int child_level = m_level + 1;
+  int child_id = addr_vec[child_level];
+  if (child_id == -1) {
+    for (auto& child : m_child_nodes) {
+      child->update_powers(command, addr_vec, clk);
+    }
+  } else {
+    m_child_nodes[child_id]->update_powers(command, addr_vec, clk);
+  }
+}
+
 bool DRAMNode::check_timing(int command, const AddrVec_t& addr_vec, Clk_t clk) {
   if (m_cmd_ready_clk[command] != -1 && clk < m_cmd_ready_clk[command]) {
     return false;

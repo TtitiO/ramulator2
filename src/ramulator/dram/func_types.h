@@ -17,6 +17,7 @@ using ActionFunc_t = void (*)(DRAMNode* bank, int cmd, const AddrVec_t& addr_vec
 using PreqFunc_t = int (*)(DRAMNode* bank, int cmd, const AddrVec_t& addr_vec, Clk_t clk);
 using RowhitFunc_t = bool (*)(DRAMNode* bank, int cmd, const AddrVec_t& addr_vec, Clk_t clk);
 using RowopenFunc_t = bool (*)(DRAMNode* bank, int cmd, const AddrVec_t& addr_vec, Clk_t clk);
+using PowerFunc_t = void (*)(DRAMNode* node, int cmd, const AddrVec_t& addr_vec, Clk_t clk);
 
 // 1D handler vectors indexed by command ID (not by level — handlers are always bank-level).
 struct FuncArrays {

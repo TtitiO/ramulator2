@@ -8,7 +8,9 @@ from .bho3 import BHO3
 from .external import External
 from .latency_throughput_trace import LatencyThroughputTrace
 from .load_store_trace import LoadStoreTrace
+from .lpddr5_pim_concrete_trace import LPDDR5PIMConcreteTrace
 from .read_write_trace import ReadWriteTrace
 from .simple_o3 import SimpleO3
+from .structured_workload_surrogate_trace import StructuredWorkloadSurrogateTrace
 
-__all__ = ['BHO3', 'External', 'LatencyThroughputTrace', 'LoadStoreTrace', 'ReadWriteTrace', 'SimpleO3']
+__all__ = ['BHO3', 'External', 'LPDDR5PIMConcreteTrace', 'LatencyThroughputTrace', 'LoadStoreTrace', 'ReadWriteTrace', 'SimpleO3', 'StructuredWorkloadSurrogateTrace']

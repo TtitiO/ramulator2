@@ -86,20 +86,20 @@ PIM_MAC_EXECUTION_MODELS = {
 #   array_local_energy: 0.0 (folded into movement; charged in layer-1)
 #
 # Per-bank PIM_MAC energy does NOT include rank-level bus energy (JEDEC
-# IDD0-IDD2N × nBL). Rank-level bus energy for PIM_BCAST is accounted
+# IDD0-IDD2N × nBL_min). Rank-level bus energy for PIM_BCAST is accounted
 # by the inherited LPDDR5 power model.
 _PIM_ENERGY_DEFAULTS_BY_DTYPE: dict[str, dict[str, float]] = {
-    "int8":  {"pim_compute_energy_pJ_per_mac": 0.35},
-    "fp16":  {"pim_compute_energy_pJ_per_mac": 0.69},
+    "int8": {"pim_compute_energy_pJ_per_mac": 0.35},
+    "fp16": {"pim_compute_energy_pJ_per_mac": 0.69},
     "int16": {"pim_compute_energy_pJ_per_mac": 0.55},
-    "bf16":  {"pim_compute_energy_pJ_per_mac": 0.55},
+    "bf16": {"pim_compute_energy_pJ_per_mac": 0.55},
 }
 _PIM_ENERGY_SHARED_DEFAULTS: dict[str, float] = {
-    "pim_array_local_energy_pJ":           0.0,
-    "pim_cell_to_pim_energy_pJ_per_256b":  686.08,
-    "pim_vrf_access_energy_pJ":            3.17,
-    "pim_srf_access_energy_pJ":            0.40,
-    "pim_mode_switch_energy_pJ":           0.0,
+    "pim_array_local_energy_pJ": 0.0,
+    "pim_cell_to_pim_energy_pJ_per_256b": 686.08,
+    "pim_vrf_access_energy_pJ": 3.17,
+    "pim_srf_access_energy_pJ": 0.40,
+    "pim_mode_switch_energy_pJ": 0.0,
 }
 
 for _dtype, _resource in PIM_DATATYPE_METADATA.items():
@@ -111,6 +111,13 @@ for _dtype, _resource in PIM_DATATYPE_METADATA.items():
 
 
 class LPDDR5PIM(LPDDR5):
+    """LPDDR5 plus the PIMScope execution-resource and mode abstractions.
+
+    ``nPIM_MAC_II`` constrains command launch spacing. Request completion is
+    modeled separately by the controller as pipeline + movement + writeback
+    residency, subject to bank slots and optional shared-MPU serialization.
+    """
+
     name = "LPDDR5PIM"
 
     # Keep inherited LPDDR5 power terms as-is for standard memory energy,
@@ -134,10 +141,10 @@ class LPDDR5PIM(LPDDR5):
     power_incremental_command_energy_timings = {
         "PIM_MAC": "nPIM_MAC_LAT",
         "PIM_MAC_AB": "nPIM_MAC_LAT",
-        "PIM_BCAST": "nBL",
-        "HAB": "nBL",
-        "HAB_PIM": "nBL",
-        "SB": "nBL",
+        "PIM_BCAST": "nBL_min",
+        "HAB": "nBL_min",
+        "HAB_PIM": "nBL_min",
+        "SB": "nBL_min",
     }
     # PIM_MAC/PIM_MAC_AB energy uses explicit event coefficients; inherited
     # LPDDR5 IDD3N background covers active-bank current.
@@ -149,7 +156,7 @@ class LPDDR5PIM(LPDDR5):
         "pim_srf_access_energy_pJ"
     )
     # PIM_BCAST adds bank-local cell-to-PIM movement; rank-level bus energy
-    # is accounted by the inherited LPDDR5 (IDD0-IDD2N) × nBL model.
+    # is accounted by the inherited LPDDR5 (IDD0-IDD2N) × nBL_min model.
     power_incremental_command_event_energy_exprs = {
         "PIM_MAC": _pim_mac_event_energy_expr,
         "PIM_MAC_AB": _pim_mac_event_energy_expr,
@@ -234,7 +241,7 @@ class LPDDR5PIM(LPDDR5):
             level="Rank",
             preceding=["PIM_BCAST"],
             following=["PIM_BCAST"],
-            latency="nBL",
+            latency="nBL_min",
         ),
     ]
 
@@ -255,8 +262,6 @@ class LPDDR5PIM(LPDDR5):
         org_preset,
         timing_preset,
         power=None,
-        pim_enabled=False,
-        pim_mode="bank",
         pim_blocks_per_bank=1,
         pim_banks_per_mpu=2,
         pim_mac_execution_model="shared_mpu_serial",
@@ -286,13 +291,34 @@ class LPDDR5PIM(LPDDR5):
         pim_incremental_energy_scale=None,
         **overrides,
     ):
+        pim_datatype = str(pim_datatype).lower()
+        if pim_datatype not in PIM_DATATYPE_METADATA:
+            supported = ", ".join(sorted(PIM_DATATYPE_METADATA))
+            raise ValueError(
+                f"LPDDR5PIM unknown pim_datatype '{pim_datatype}'; supported datatypes: {supported}"
+            )
         if not pim_datatype_class:
             pim_datatype_class = pim_datatype
         pim_datatype_class = str(pim_datatype_class).lower()
+        if pim_datatype_class not in PIM_DATATYPE_METADATA:
+            supported = ", ".join(sorted(PIM_DATATYPE_METADATA))
+            raise ValueError(
+                f"LPDDR5PIM unknown pim_datatype_class '{pim_datatype_class}'; "
+                f"supported datatype classes: {supported}"
+            )
+        if pim_datatype_class != pim_datatype:
+            raise ValueError(
+                "LPDDR5PIM pim_datatype_class must match pim_datatype; "
+                "cross-datatype resource substitution is not a defined hardware model"
+            )
         if pim_mac_latency_scale is not None:
-            raise ValueError("LPDDR5PIM pim_mac_latency_scale is deprecated; use explicit pipeline/II cycles")
+            raise ValueError(
+                "LPDDR5PIM pim_mac_latency_scale is deprecated; use explicit pipeline/II cycles"
+            )
         if pim_incremental_energy_scale is not None:
-            raise ValueError("LPDDR5PIM pim_incremental_energy_scale is deprecated; use explicit event-energy terms")
+            raise ValueError(
+                "LPDDR5PIM pim_incremental_energy_scale is deprecated; use explicit event-energy terms"
+            )
 
         pim_mac_execution_model = str(pim_mac_execution_model)
         if pim_mac_execution_model not in PIM_MAC_EXECUTION_MODELS:
@@ -302,7 +328,7 @@ class LPDDR5PIM(LPDDR5):
                 f"supported values: {supported}"
             )
 
-        resource = dict(PIM_DATATYPE_METADATA.get(pim_datatype_class, PIM_DATATYPE_METADATA["int8"]))
+        resource = dict(PIM_DATATYPE_METADATA[pim_datatype_class])
         if pim_datatype_behavior_enabled and pim_datatype_class not in PIM_DATATYPE_RESOURCES:
             supported = ", ".join(sorted(PIM_DATATYPE_RESOURCES))
             raise ValueError(
@@ -331,9 +357,18 @@ class LPDDR5PIM(LPDDR5):
             resource["pim_movement_cycles"] = int(pim_movement_cycles)
         if pim_writeback_cycles is not None:
             resource["pim_writeback_cycles"] = int(pim_writeback_cycles)
+        if (
+            pim_slots_per_request is not None
+            and pim_slot_cost is not None
+            and int(pim_slots_per_request) != int(pim_slot_cost)
+        ):
+            raise ValueError(
+                "LPDDR5PIM pim_slot_cost is a compatibility alias and must equal "
+                "pim_slots_per_request"
+            )
         if pim_slots_per_request is not None:
             resource["pim_slots_per_request"] = int(pim_slots_per_request)
-        if pim_slot_cost is not None and pim_slots_per_request is None:
+        elif pim_slot_cost is not None:
             resource["pim_slots_per_request"] = int(pim_slot_cost)
 
         energy_overrides = {
@@ -349,19 +384,35 @@ class LPDDR5PIM(LPDDR5):
                 resource[energy_field] = float(energy_value)
 
         if pim_lanes is None:
-            resource["pim_lanes"] = int(resource["pim_simd_width_bits"] // resource["pim_datatype_bits"])
+            resource["pim_lanes"] = int(
+                resource["pim_simd_width_bits"] // resource["pim_datatype_bits"]
+            )
         if pim_ops_per_block_issue is None and pim_ops_per_request is None:
-            resource["pim_ops_per_block_issue"] = (
-                float(resource["pim_lanes"]) * float(resource["pim_ops_per_mac"])
+            resource["pim_ops_per_block_issue"] = float(resource["pim_lanes"]) * float(
+                resource["pim_ops_per_mac"]
             )
         resource["pim_ops_per_request"] = float(resource["pim_ops_per_block_issue"])
 
+        if not isinstance(pim_blocks_per_bank, int) or isinstance(pim_blocks_per_bank, bool):
+            raise ValueError("LPDDR5PIM pim_blocks_per_bank must be an integer")
+        if not isinstance(pim_banks_per_mpu, int) or isinstance(pim_banks_per_mpu, bool):
+            raise ValueError("LPDDR5PIM pim_banks_per_mpu must be an integer")
+        if pim_blocks_per_bank <= 0:
+            raise ValueError("LPDDR5PIM pim_blocks_per_bank must be positive")
         if resource["pim_datatype_bits"] <= 0:
             raise ValueError("LPDDR5PIM pim_datatype_bits must be positive")
         if resource["pim_simd_width_bits"] <= 0:
             raise ValueError("LPDDR5PIM pim_simd_width_bits must be positive")
+        if resource["pim_simd_width_bits"] % resource["pim_datatype_bits"] != 0:
+            raise ValueError("LPDDR5PIM pim_simd_width_bits must be divisible by pim_datatype_bits")
+        expected_lanes = resource["pim_simd_width_bits"] // resource["pim_datatype_bits"]
         if resource["pim_lanes"] <= 0:
             raise ValueError("LPDDR5PIM pim_lanes must be positive")
+        if resource["pim_lanes"] != expected_lanes:
+            raise ValueError(
+                f"LPDDR5PIM pim_lanes must equal pim_simd_width_bits / "
+                f"pim_datatype_bits ({expected_lanes}), got {resource['pim_lanes']}"
+            )
         if resource["pim_ops_per_mac"] <= 0:
             raise ValueError("LPDDR5PIM pim_ops_per_mac must be positive")
         if resource["pim_ops_per_block_issue"] <= 0:
@@ -384,8 +435,6 @@ class LPDDR5PIM(LPDDR5):
             if resource[energy_field] < 0:
                 raise ValueError(f"LPDDR5PIM {energy_field} must be non-negative")
 
-        self.pim_enabled = pim_enabled
-        self.pim_mode = pim_mode
         self.pim_blocks_per_bank = pim_blocks_per_bank
         self.pim_banks_per_mpu = pim_banks_per_mpu
         self.pim_mac_execution_model = pim_mac_execution_model
@@ -393,7 +442,9 @@ class LPDDR5PIM(LPDDR5):
         self.pim_datatype_class = pim_datatype_class
         self.pim_datatype_behavior_enabled = pim_datatype_behavior_enabled
         self.pim_datatype_resource = resource
-        super().__init__(org_preset=org_preset, timing_preset=timing_preset, power=power, **overrides)
+        super().__init__(
+            org_preset=org_preset, timing_preset=timing_preset, power=power, **overrides
+        )
 
     def _resolve_pim_resource_cycles(self, base_pim_mac_latency, base_pim_mac_issue_interval):
         if self.pim_datatype_behavior_enabled:
@@ -405,6 +456,29 @@ class LPDDR5PIM(LPDDR5):
 
     def resolve(self):
         org_dict, timing_dict = super().resolve()
+        banks_per_rank = 1
+        for level_name in list(type(self).levels)[2:]:
+            if level_name in {"Row", "Column"}:
+                continue
+            banks_per_rank *= int(org_dict[level_name.lower()])
+        if self.pim_banks_per_mpu > banks_per_rank:
+            raise ValueError(
+                f"LPDDR5PIM pim_banks_per_mpu ({self.pim_banks_per_mpu}) exceeds "
+                f"banks per rank ({banks_per_rank})"
+            )
+        if banks_per_rank % self.pim_banks_per_mpu != 0:
+            raise ValueError(
+                f"LPDDR5PIM banks per rank ({banks_per_rank}) must be divisible by "
+                f"pim_banks_per_mpu ({self.pim_banks_per_mpu})"
+            )
+        if self.pim_datatype_behavior_enabled and self.pim_blocks_per_bank < int(
+            self.pim_datatype_resource["pim_slots_per_request"]
+        ):
+            raise ValueError(
+                "LPDDR5PIM pim_blocks_per_bank must be at least pim_slots_per_request "
+                "when datatype behavior is enabled"
+            )
+
         base_pim_mac_latency = timing_dict["nPIM_MAC_LAT"]
         base_pim_mac_issue_interval = timing_dict["nPIM_MAC_II"]
         pim_mac_latency_cycles, pim_mac_issue_interval_cycles = self._resolve_pim_resource_cycles(

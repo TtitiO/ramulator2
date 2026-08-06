@@ -19,6 +19,8 @@ target_sources(
   commands/RFMab.h  commands/RFMpb.h
   commands/RCKSTRT.h  commands/RCKSTOP.h
   commands/CAS.h  commands/CAS_RD.h  commands/CAS_WR.h
+  commands/SB.h  commands/HAB.h  commands/HAB_PIM.h
+  commands/PIM_BCAST.h  commands/PIM_MAC.h  commands/PIM_MAC_AB.h
   commands/VRR.h
   commands/populate.h
 
@@ -34,6 +36,7 @@ target_sources(
   impl/HBM3.cpp
   impl/HBM4.cpp
   impl/LPDDR5.cpp
+  impl/LPDDR5PIM.cpp
   impl/LPDDR6.cpp
   impl/GDDR6.cpp
   impl/GDDR7.cpp

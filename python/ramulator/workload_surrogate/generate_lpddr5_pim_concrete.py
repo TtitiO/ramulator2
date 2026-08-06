@@ -157,7 +157,6 @@ def _addr_vec_from_semantic(
     dep = dict(record.get("dependency_context", {}))
     burst_length = int(record.get("burst_length", 1))
     dependency_count = max(1, int(dep.get("dependency_count", 1)))
-    dependency_id = int(dep.get("dependency_id", 0)) % dependency_count
     row_start = int(row_policy.get("row_start", 0))
     row_count = max(1, int(row_policy.get("row_count", 1)))
     resolved_row = int(row_policy.get("resolved_row", row_start))

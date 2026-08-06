@@ -11,15 +11,13 @@ frontend = ramulator.frontend.SimpleO3(
 lpddr5_pim = ramulator.dram.LPDDR5PIM(
     org_preset="LPDDR5_8Gb_x16",
     timing_preset="LPDDR5_6400",
-    pim_enabled=True,
-    pim_mode="bank",
     pim_blocks_per_bank=1,
     pim_datatype="int8",
 )
 ctrl = ramulator.controller.LPDDR5PIM(
     dram=lpddr5_pim,
     scheduler=ramulator.scheduler.FRFCFS(),
-    refresh_manager=ramulator.refresh_manager.AllBank(scope="Rank"),
+    refresh_manager=ramulator.refresh_manager.AllBank(),
     row_policy=ramulator.row_policy.Open(),
     addr_mapper=ramulator.addr_mapper.RoBaRaCoCh(),
 )

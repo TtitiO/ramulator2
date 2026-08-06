@@ -16,6 +16,7 @@ void DRAMDevice::set_channel_id(int channel_id) {
 
 void DRAMDevice::issue_command(int command, const AddrVec_t& addr_vec, Clk_t clk) {
   m_root->update_timing(command, addr_vec, clk);
+  m_root->update_powers(command, addr_vec, clk);
   apply_action(command, addr_vec, clk);
 }
 
@@ -75,6 +76,12 @@ std::vector<int> DRAMDevice::get_target_banks(int command, const AddrVec_t& addr
   std::vector<int> ids;
   for_each_target_bank(command, addr_vec, [&](int id) { ids.push_back(id); });
   return ids;
+}
+
+void DRAMDevice::finalize_power(Clk_t clk) {
+  if (m_spec && m_root) {
+    m_spec->finalize_power(clk, m_root.get());
+  }
 }
 
 void DRAMDevice::apply_action(int command, const AddrVec_t& addr_vec, Clk_t clk) {

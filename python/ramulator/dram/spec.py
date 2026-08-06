@@ -81,6 +81,16 @@ class DRAMStandard(Component):
     read_latency = "nCL + nBL"
     row_commands = []  # type: list[str]  — commands on the row bus (dual-bus standards)
     column_commands = []  # type: list[str]  — commands on the column bus (dual-bus standards)
+    power_commands_counted = []  # type: list[str]
+    power_command_hooks = []  # type: list[tuple[str, str, str]]
+    power_command_energy_timings = {}  # type: dict[str, str]
+    power_parameter_fields = []  # type: list[str]
+    power_background_energy_terms = {}  # type: dict[str, list[tuple[str, str]]]
+    power_command_energy_terms = {}  # type: dict[str, list[tuple[str, str, str | None]]]
+    power_incremental_commands_counted = []  # type: list[str]
+    power_incremental_command_hooks = []  # type: list[tuple[str, str, str]]
+    power_incremental_command_energy_timings = {}  # type: dict[str, str]
+    power_incremental_command_energy_terms = {}  # type: dict[str, list[tuple[str, str, str | None]]]
 
     # ---- Class-level: presets ----
     org_presets = {}  # type: dict[str, dict]
@@ -98,9 +108,10 @@ class DRAMStandard(Component):
         if isinstance(getattr(cls, "name", None), str):
             DRAMStandard._registry[cls.name] = cls
 
-    def __init__(self, *, org_preset, timing_preset, **overrides):
+    def __init__(self, *, org_preset, timing_preset, power=None, **overrides):
         super().__init__(org_preset=org_preset, timing_preset=timing_preset)
         self._overrides = overrides
+        self._power = power
 
     @classmethod
     def resolve_secondary_timings(cls, timing_dict, org_dict):
@@ -153,12 +164,33 @@ class DRAMStandard(Component):
         cls = type(self)
         org_dict, timing_dict = self.resolve()
 
-        # Validate no unresolved timings
+        # Validate no unresolved or invalid timings. Zero is legal for timing
+        # terms that represent an intentionally absent delay or feature.
         unresolved = [k for k, v in timing_dict.items() if v == -1]
         if unresolved:
             raise ValueError(
                 f"{cls.name}: unresolved timings {unresolved}. Set them explicitly via overrides."
             )
+        invalid_timings = [
+            name
+            for name, value in timing_dict.items()
+            if isinstance(value, bool) or not isinstance(value, (int, float)) or value < 0
+        ]
+        if invalid_timings:
+            raise ValueError(
+                f"{cls.name}: timing values must be non-negative numbers; invalid: {invalid_timings}"
+            )
+
+        # Validate fields that define native hierarchy dimensions. Other preset
+        # metadata (for example LPDDR6 ODT flags) may be non-numeric.
+        hierarchy_fields = {"dq", "channel_width"} | {name.lower() for name in list(cls.levels)[1:]}
+        for field in hierarchy_fields:
+            value = org_dict.get(field)
+            if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+                raise ValueError(
+                    f"{cls.name}: organization field '{field}' must be a positive integer, "
+                    f"got {value!r}"
+                )
 
         # Validate channel_width
         cw = org_dict["channel_width"]
@@ -170,7 +202,9 @@ class DRAMStandard(Component):
         if cw % dq != 0:
             raise ValueError(f"{cls.name}: channel_width ({cw}) must be a multiple of dq ({dq})")
         if cls.data_payload_bytes is not None and cls.data_payload_bytes <= 0:
-            raise ValueError(f"{cls.name}: data_payload_bytes must be positive, got {cls.data_payload_bytes}")
+            raise ValueError(
+                f"{cls.name}: data_payload_bytes must be positive, got {cls.data_payload_bytes}"
+            )
 
         # ---- Single-place CK → tick conversion ----
         # All Python-facing values (presets, command_cycles, constraint
@@ -256,6 +290,8 @@ class DRAMStandard(Component):
         }
         if cls.data_payload_bytes is not None:
             config["data_payload_bytes"] = cls.data_payload_bytes
+        if self._power is not None:
+            config["power"] = self._power
         return config
 
     @classmethod
@@ -309,9 +345,7 @@ class DRAMStandard(Component):
         try:
             result = eval(substituted)
         except NameError as e:
-            raise ValueError(
-                f"{cls.name}: unresolved parameter in expression '{expr}': {e}"
-            ) from e
+            raise ValueError(f"{cls.name}: unresolved parameter in expression '{expr}': {e}") from e
         return int(result) if result == int(result) else result
 
     @classmethod

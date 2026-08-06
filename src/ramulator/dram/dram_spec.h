@@ -11,6 +11,7 @@
 #include <vector>
 
 #include "ramulator/base/config_node.h"
+#include "ramulator/base/stats.h"
 #include "ramulator/base/type.h"
 #include "ramulator/dram/func_types.h"
 
@@ -39,6 +40,26 @@ struct DRAMCommandMeta {
   bool is_refreshing = false;
   bool is_row_command = false;     // Row bus (HBM/HBM2: ACT, PREpb, PREab, REFab, REFpb)
   bool is_column_command = false;  // Column bus (HBM/HBM2: RD, WR, RDA, WRA)
+};
+
+struct DRAMPowerStats {
+  enum class PowerState {
+    Idle = 0,
+    Active = 1,
+  };
+
+  int rank_id = -1;
+  PowerState current_state = PowerState::Idle;
+  Clk_t last_update_clk = 0;
+  Clk_t active_cycles = 0;
+  Clk_t idle_cycles = 0;
+  double background_active_energy_pJ = 0.0;
+  double background_idle_energy_pJ = 0.0;
+  double command_energy_pJ = 0.0;
+  double incremental_command_energy_pJ = 0.0;
+  double total_energy_pJ = 0.0;
+  std::vector<size_t> command_counters;
+  std::vector<size_t> incremental_command_counters;
 };
 
 // Timing Constraint
@@ -93,6 +114,47 @@ struct DRAMSpec {
   int channel_width = -1;
   int data_payload_bytes = -1;
   Clk_t read_latency = -1;
+  // PIM execution-resource contract. These fields are serialized by
+  // PIM-capable DRAM standards and validated before controller construction.
+  // A PIM_MAC command launch occupies pim_slots_per_request slots in one bank
+  // for pipeline + movement + writeback cycles. Shared-MPU arbitration is an
+  // independent constraint selected by pim_mac_execution_model.
+  int pim_blocks_per_bank = 1;
+  int pim_banks_per_mpu = 2;
+  std::string pim_mac_execution_model = "shared_mpu_serial";
+  std::string pim_datatype = "int8";
+  std::string pim_datatype_class = "int8";
+  bool pim_datatype_behavior_enabled = false;
+  int pim_datatype_bits = 8;
+  int pim_simd_width_bits = 256;
+  int pim_lanes = 32;
+  double pim_ops_per_mac = 2.0;
+  double pim_ops_per_block_issue = 64.0;
+  double pim_ops_per_request = 64.0;
+  int pim_mac_latency_cycles = -1;  // Compatibility alias for pipeline latency.
+  int pim_mac_issue_interval_cycles = -1;
+  int pim_mac_pipeline_latency_cycles = -1;
+  int pim_movement_cycles = 1;
+  int pim_writeback_cycles = 0;
+  int pim_slots_per_request = 1;
+  int pim_slot_cost = 1;  // Compatibility alias for pim_slots_per_request.
+  double pim_compute_energy_pJ_per_mac = 0.0;
+  double pim_array_local_energy_pJ = 0.0;
+  double pim_cell_to_pim_energy_pJ_per_256b = 0.0;
+  double pim_vrf_access_energy_pJ = 0.0;
+  double pim_srf_access_energy_pJ = 0.0;
+  double pim_mode_switch_energy_pJ = 0.0;
+  bool drampower_enable = false;
+  bool power_debug = false;
+  std::unordered_map<std::string, double> power_params;
+  std::vector<DRAMPowerStats> power_stats;
+  std::vector<std::vector<PowerFunc_t>> powers;
+  std::vector<std::vector<PowerFunc_t>> powers_incremental;
+  double total_background_energy_pJ = 0.0;
+  double total_cmd_energy_pJ = 0.0;
+  double total_incremental_cmd_energy_pJ = 0.0;
+  double total_energy_pJ = 0.0;
+
 
   // Per-level/command arrays
   Organization organization;
@@ -166,6 +228,12 @@ struct DRAMSpec {
   // Load runtime config data (organization, timing, etc.).
   // Defined in dram_spec.cpp.
   void load_config(const ConfigNode& config);
+
+  virtual void register_power_stats(Stats& stats) {
+  }
+
+  virtual void finalize_power(Clk_t clk, DRAMNode* root) {
+  }
 
   // Factory registry — maps DRAM standard name (e.g., "DDR4") to creator.
   using Creator = std::function<std::unique_ptr<DRAMSpec>(const ConfigNode&)>;

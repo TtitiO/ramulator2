@@ -39,6 +39,7 @@ struct DRAMNode {
   DRAMNode(DRAMSpec* spec, DRAMNode* parent, int level, int id);
 
   void update_timing(int command, const AddrVec_t& addr_vec, Clk_t clk);
+  void update_powers(int command, const AddrVec_t& addr_vec, Clk_t clk);
   bool check_timing(int command, const AddrVec_t& addr_vec, Clk_t clk);
 
   // Generic level traversal — visit all descendants at target_level
