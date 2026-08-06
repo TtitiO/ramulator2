@@ -382,6 +382,11 @@ Use the controller that matches the standard you want to model. DDR3, DDR4, DDR5
 
 #### LPDDR5-PIM execution semantics
 
+This fork extends the upstream Ramulator 2.1 model with LPDDR5-PIM support.
+The PIMScope parent repository provides workload-generation and artifact scripts;
+this submodule owns the DRAM, controller, frontend, code-generation, and
+validation implementation.
+
 PIMScope's `LPDDR5PIM` extension is an explicit simulator abstraction rather than a claim that every added opcode is a literal public LPDDR5 command. Pair `ramulator.dram.LPDDR5PIM` with `ramulator.controller.LPDDR5PIM`.
 
 ```python
@@ -407,6 +412,20 @@ The timing/resource contract is:
 - Datatype behavior is opt-in. `int8` and `fp16` have source-backed timing/resource profiles; `int16` and `bf16` remain metadata/energy what-if labels unless explicit support is added. Unknown datatype names and inconsistent SIMD/lane settings are rejected.
 
 The controller exposes separate issue, completion, stall, slot-capacity, shared-MPU, and latency statistics so analyses do not conflate a command launch with completed work.
+
+The checked-in Python tests cover the upstream validation infrastructure and the
+LPDDR5-PIM extension. The optional native harness binding is disabled by
+default; build it only when running controller/device timing tests:
+
+```bash
+cmake -S . -B build-tests \
+  -DRAMULATOR_TEST_BINDINGS=ON \
+  -DRAMULATOR_PYTHON_BINDINGS=ON
+cmake --build build-tests -j
+```
+
+When using the controller/device harness, run the project-owned tests from this
+submodule's repository root with the same Python environment used by CMake.
 
 #### Change rank count or other DRAM overrides
 
