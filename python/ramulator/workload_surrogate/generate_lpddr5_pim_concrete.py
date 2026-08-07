@@ -28,6 +28,7 @@ ALL_BANK_LOAD_SEMANTIC_KINDS = {"PIMLoadAll", "PIMDataMove"}
 ALL_BANK_COMPUTE_SEMANTIC_KINDS = {"PIMComputeAll"}
 HOST_SEMANTIC_KINDS = {"HostRead", "HostWrite"}
 SEMANTIC_ONLY_PIM_DATA_MOVE_KINDS = {"dynamic_activation_tile", "bank_local_tile_activation", "cross_bank_operand_shuffle_accounting"}
+SYNTHETIC_ADDRESS_POLICIES = {"strict_bytes", "bounded_surrogate_v1"}
 
 # Physical residency classification within PER_BANK_COMPUTE_SEMANTIC_KINDS.
 #
@@ -114,7 +115,8 @@ def _semantic_provenance(record: dict, *, manifest_name: str) -> dict:
         "notes": (
             "lowered from Phase 2 semantic workload-surrogate record; native LPDDR5-PIM concrete "
             "opcode replay only; PIM_BCAST remains a bounded all-bank setup abstraction, not a "
-            "silicon-faithful source/timing claim"
+            "silicon-faithful source/timing claim; generated host byte ranges use the explicit "
+            "bounded_surrogate_v1 placement policy"
         ),
     }
 
@@ -196,8 +198,82 @@ def _addr_vec_from_semantic(
     return av
 
 
-def _addr_vec_from_byte_address(address: int, *, addr_vec_size: int) -> list[int]:
-    return addr_vec_from_byte_address(address, addr_vec_size=addr_vec_size)
+def _addr_vec_from_byte_address(
+    address: int,
+    *,
+    addr_vec_size: int,
+    address_layout: dict | None,
+) -> list[int]:
+    return addr_vec_from_byte_address(
+        address, addr_vec_size=addr_vec_size, address_layout=address_layout
+    )
+
+
+def _host_address_chunks(
+    *,
+    base_byte: int,
+    stride_bytes: int,
+    count: int,
+    max_repeat: int,
+    address_layout: dict | None,
+    synthetic_address_policy: str,
+):
+    """Yield bounded concrete host streams as (base, stride, repeat).
+
+    ``strict_bytes`` treats semantic addresses as literal physical byte
+    addresses. ``bounded_surrogate_v1`` is the explicit compatibility policy
+    for PIMScope's generated workload surrogate: its historical address tokens
+    advance in internal-prefetch units, then wrap deterministically within the
+    resolved transaction capacity. The resulting concrete ``addr_byte`` values
+    are always real in-range byte addresses and still use the canonical mapper.
+    """
+    if count <= 0 or max_repeat <= 0:
+        raise ValueError("host address chunk count and max_repeat must be positive")
+    if synthetic_address_policy not in SYNTHETIC_ADDRESS_POLICIES:
+        raise ValueError(
+            f"synthetic_address_policy must be one of {sorted(SYNTHETIC_ADDRESS_POLICIES)}"
+        )
+
+    if synthetic_address_policy == "strict_bytes":
+        remaining = count
+        offset = 0
+        while remaining > 0:
+            repeat_chunk = min(max_repeat, remaining)
+            chunk_base = base_byte + offset * stride_bytes
+            yield chunk_base, stride_bytes if repeat_chunk > 1 else 0, repeat_chunk
+            remaining -= repeat_chunk
+            offset += repeat_chunk
+        return
+
+    if address_layout is None:
+        raise ValueError("bounded_surrogate_v1 requires a resolved address_layout")
+    prefetch = int(address_layout["internal_prefetch_size"])
+    tx_bytes = int(address_layout["tx_bytes"])
+    capacity_bytes = int(address_layout["capacity_bytes"])
+    if prefetch <= 0 or tx_bytes <= 0 or capacity_bytes <= 0 or capacity_bytes % tx_bytes != 0:
+        raise ValueError("bounded_surrogate_v1 requires valid prefetch, transaction, and capacity values")
+    if base_byte % prefetch != 0 or stride_bytes % prefetch != 0:
+        raise ValueError(
+            "bounded_surrogate_v1 requires surrogate base/stride alignment to internal_prefetch_size"
+        )
+
+    num_transactions = capacity_bytes // tx_bytes
+    step_transactions = (stride_bytes // prefetch) % num_transactions
+    remaining = count
+    offset = 0
+    while remaining > 0:
+        logical_address = base_byte + offset * stride_bytes
+        start_transaction = (logical_address // prefetch) % num_transactions
+        if step_transactions == 0:
+            repeat_chunk = min(max_repeat, remaining)
+            concrete_stride = 0
+        else:
+            before_wrap = (num_transactions - 1 - start_transaction) // step_transactions + 1
+            repeat_chunk = min(max_repeat, remaining, before_wrap)
+            concrete_stride = step_transactions * tx_bytes
+        yield start_transaction * tx_bytes, concrete_stride if repeat_chunk > 1 else 0, repeat_chunk
+        remaining -= repeat_chunk
+        offset += repeat_chunk
 
 
 def _semantic_datatype_bytes(record: dict) -> int:
@@ -282,6 +358,8 @@ def lower_semantic_records_to_concrete(
     interleave_depth: int = 4,
     max_repeat_per_record: int = MAX_REPEAT,
     mac_mode: str = "per_kind",
+    address_layout: dict | None = None,
+    synthetic_address_policy: str = "strict_bytes",
 ) -> list[dict]:
     """Lower Phase 2 semantic records into native LPDDR5-PIM concrete opcodes.
 
@@ -295,6 +373,24 @@ def lower_semantic_records_to_concrete(
     record with in-memory interleaving fields — the C++ frontend expands them
     at replay time.  Set materialize_weights=True to emit host-WRITE preload
     records for cold-start experiments (default steady-state skips weights)."""
+    if synthetic_address_policy not in SYNTHETIC_ADDRESS_POLICIES:
+        raise ValueError(
+            f"synthetic_address_policy must be one of {sorted(SYNTHETIC_ADDRESS_POLICIES)}"
+        )
+    if address_layout is not None:
+        layout_names = list(address_layout.get("level_names", []))
+        layout_size = len(layout_names)
+        if layout_size != addr_vec_size:
+            raise ValueError(
+                f"address_layout level count {layout_size} must equal addr_vec_size {addr_vec_size}"
+            )
+        row_level = layout_names.index("Row")
+        col_level = layout_names.index("Column")
+        bank_level = layout_names.index("Bank")
+        if bank_positions is None or bank_counts is None:
+            bank_positions = list(address_layout["bank_positions"])
+            bank_counts = list(address_layout["bank_counts"])
+
     records: list[dict] = []
     next_id = 0
     mode = "SB"
@@ -371,25 +467,30 @@ def lower_semantic_records_to_concrete(
                 raise ValueError(f"Semantic record {semantic.get('record_id')} repeat must be positive")
             opcode = "WRITE" if kind == "HostWrite" else "READ"
             for repeat_index in range(semantic_repeat):
-                remaining = count
-                chunk_start = 0
-                split_index = 0
-                while remaining > 0:
-                    repeat_chunk = min(MAX_REPEAT, remaining)
-                    chunk_base_byte = base_byte + chunk_start * stride_bytes
-                    av = _addr_vec_from_byte_address(chunk_base_byte, addr_vec_size=addr_vec_size)
+                logical_base = base_byte + repeat_index * count * stride_bytes
+                chunks = _host_address_chunks(
+                    base_byte=logical_base,
+                    stride_bytes=stride_bytes,
+                    count=count,
+                    max_repeat=MAX_REPEAT,
+                    address_layout=address_layout,
+                    synthetic_address_policy=synthetic_address_policy,
+                )
+                for split_index, (chunk_base_byte, concrete_stride, repeat_chunk) in enumerate(chunks):
+                    av = _addr_vec_from_byte_address(
+                        chunk_base_byte,
+                        addr_vec_size=addr_vec_size,
+                        address_layout=address_layout,
+                    )
                     extra_fields = {"addr_byte": chunk_base_byte}
-                    if repeat_chunk > 1:
-                        extra_fields["addr_byte_stride"] = stride_bytes
+                    if repeat_chunk > 1 and concrete_stride > 0:
+                        extra_fields["addr_byte_stride"] = concrete_stride
                     notes = (
                         f"semantic {kind} lowered to concrete {opcode}"
                         if semantic_repeat == 1 and count <= MAX_REPEAT
                         else f"semantic {kind} lowered to concrete {opcode} repeat {repeat_index + 1}/{semantic_repeat} split {split_index + 1}"
                     )
                     append(opcode, semantic, av, repeat=repeat_chunk, notes=notes, extra_fields=extra_fields)
-                    remaining -= repeat_chunk
-                    chunk_start += repeat_chunk
-                    split_index += 1
             continue
         # Weight records: skip lowering in steady-state inference (weights are resident).
         # Use materialize_weights=True for cold-start preload or frontend stress testing;
@@ -400,6 +501,11 @@ def lower_semantic_records_to_concrete(
             if operand_role == "weight":
                 if not materialize_weights:
                     continue
+                if synthetic_address_policy != "bounded_surrogate_v1":
+                    raise ValueError(
+                        "synthetic weight materialization requires bounded_surrogate_v1; "
+                        "it is not a literal physical placement map"
+                    )
                 if mode != "SB":
                     append("SB", semantic, [0] * addr_vec_size, notes="return to single-bank mode before host WRITE weight preload")
                     mode = "SB"
@@ -412,16 +518,24 @@ def lower_semantic_records_to_concrete(
                     raise ValueError(f"Semantic record {semantic.get('record_id')} repeat must be positive")
                 base_byte = _pim_data_move_materialization_base_byte(semantic, tx_bytes=tx_bytes)
                 for repeat_index in range(semantic_repeat):
-                    remaining = count
-                    chunk_start = 0
-                    split_index = 0
-                    while remaining > 0:
-                        repeat_chunk = min(MAX_REPEAT, remaining)
-                        chunk_base_byte = base_byte + (repeat_index * count + chunk_start) * tx_bytes
-                        av = _addr_vec_from_byte_address(chunk_base_byte, addr_vec_size=addr_vec_size)
+                    logical_base = base_byte + repeat_index * count * tx_bytes
+                    chunks = _host_address_chunks(
+                        base_byte=logical_base,
+                        stride_bytes=tx_bytes,
+                        count=count,
+                        max_repeat=MAX_REPEAT,
+                        address_layout=address_layout,
+                        synthetic_address_policy=synthetic_address_policy,
+                    )
+                    for split_index, (chunk_base_byte, concrete_stride, repeat_chunk) in enumerate(chunks):
+                        av = _addr_vec_from_byte_address(
+                            chunk_base_byte,
+                            addr_vec_size=addr_vec_size,
+                            address_layout=address_layout,
+                        )
                         extra_fields = {"addr_byte": chunk_base_byte}
-                        if repeat_chunk > 1:
-                            extra_fields["addr_byte_stride"] = tx_bytes
+                        if repeat_chunk > 1 and concrete_stride > 0:
+                            extra_fields["addr_byte_stride"] = concrete_stride
                         notes = (
                             "semantic PIMDataMove weight residency materialized as concrete WRITE preload"
                             if semantic_repeat == 1 and count <= MAX_REPEAT
@@ -429,9 +543,6 @@ def lower_semantic_records_to_concrete(
                             f"repeat {repeat_index + 1}/{semantic_repeat} split {split_index + 1}"
                         )
                         append("WRITE", semantic, av, repeat=repeat_chunk, notes=notes, extra_fields=extra_fields)
-                        remaining -= repeat_chunk
-                        chunk_start += repeat_chunk
-                        split_index += 1
                 continue
         num_requests = int(semantic.get("num_requests", 0))
         if num_requests <= 0:
@@ -623,7 +734,7 @@ def lower_semantic_records_to_concrete(
                 mode = "SB"
                 all_bank_load_ready = False
 
-    validate_sequence(records)
+    validate_sequence(records, address_layout=address_layout)
     return records
 
 

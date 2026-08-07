@@ -10,6 +10,10 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+from typing import Any, Mapping
+
+from ramulator.dram.addressing import addr_vec_from_byte_address as _map_byte_address
+from ramulator.dram.addressing import validate_addr_vec
 
 
 CONCRETE_SCHEMA_VERSION = "lpddr5-pim-opcode-v0.2"
@@ -53,34 +57,25 @@ def stable_json_pretty(data: object) -> str:
     return json.dumps(data, indent=2, sort_keys=True) + "\n"
 
 
-def addr_vec_from_byte_address(address: int, *, addr_vec_size: int) -> list[int]:
-    if addr_vec_size <= 0:
-        raise ValueError("addr_vec_size must be positive")
-    if address < 0:
-        raise ValueError("host byte address must be non-negative")
-    if addr_vec_size == 6:
-        # LPDDR5-PIM concrete traces use [Channel, Rank, BankGroup, Bank, Row,
-        # Column].  Keep host READ/WRITE traffic inside the configured hierarchy
-        # instead of treating each addr_vec component as a base-4096 digit; the
-        # latter can synthesize impossible bank ids for large cold-start WRITE
-        # streams and crash native backend indexing before validation can fire.
-        value = int(address)
-        column = value % 1024
-        value //= 1024
-        row = value % 32768
-        value //= 32768
-        bank = value % 4
-        value //= 4
-        bank_group = value % 4
-        return [0, 0, bank_group, bank, row, column]
-    av = [0] * addr_vec_size
-    value = int(address)
-    for index in range(addr_vec_size - 1, -1, -1):
-        av[index] = value % 4096
-        value //= 4096
-    if value != 0:
-        raise ValueError(f"host byte address {address} does not fit in addr_vec_size {addr_vec_size}")
-    return av
+def addr_vec_from_byte_address(
+    address: int,
+    *,
+    addr_vec_size: int | None = None,
+    address_layout: Mapping[str, Any] | None = None,
+) -> list[int]:
+    """Map a byte address using the shared organization-derived mapper."""
+    if address_layout is None:
+        raise ValueError("address_layout is required for host byte-address mapping")
+    level_names = list(address_layout["level_names"])
+    if addr_vec_size is not None and len(level_names) != addr_vec_size:
+        raise ValueError("address_layout level count must equal addr_vec_size")
+    return _map_byte_address(
+        address,
+        level_names=level_names,
+        level_sizes=list(address_layout["level_sizes"]),
+        internal_prefetch_size=int(address_layout["internal_prefetch_size"]),
+        tx_bytes=int(address_layout["tx_bytes"]),
+    )
 
 
 def concrete_provenance(*, source_kind: str = "generated", manifest_name: str = "lpddr5_pim_concrete_minimal") -> dict:
@@ -110,7 +105,7 @@ def validate_header(header: dict) -> None:
         raise ValueError(f"Unsupported concrete opcode schema_version: {header.get('schema_version')}")
 
 
-def validate_record(record: dict) -> None:
+def validate_record(record: dict, *, address_layout: Mapping[str, Any] | None = None) -> None:
     required = {"opcode", "repeat", "addr_vec"}
     missing = sorted(required - set(record))
     if missing:
@@ -131,9 +126,21 @@ def validate_record(record: dict) -> None:
         raise ValueError(f"Concrete opcode repeat must be in [1, {MAX_REPEAT}]")
     if not isinstance(record["addr_vec"], list) or not record["addr_vec"]:
         raise ValueError("Concrete opcode addr_vec must be a non-empty list")
-    if any(not isinstance(value, int) for value in record["addr_vec"]):
+    if any(isinstance(value, bool) or not isinstance(value, int) for value in record["addr_vec"]):
         raise ValueError("Concrete opcode addr_vec entries must be integers")
+    resolved_layout = address_layout
+    if resolved_layout is not None:
+        validate_addr_vec(
+            record["addr_vec"],
+            level_names=list(resolved_layout["level_names"]),
+            level_sizes=list(resolved_layout["level_sizes"]),
+            context="Concrete opcode addr_vec",
+        )
+    elif any(value < 0 for value in record["addr_vec"]):
+        raise ValueError("Concrete opcode addr_vec entries must be non-negative")
     is_host_opcode = opcode in {"READ", "WRITE"}
+    if is_host_opcode and resolved_layout is None:
+        raise ValueError("Concrete READ/WRITE validation requires address_layout")
     if {"addr_byte", "addr_byte_stride"} & set(record) and not is_host_opcode:
         raise ValueError("Concrete opcode addr_byte fields are only valid for READ/WRITE")
     if is_host_opcode and "addr_byte" not in record:
@@ -143,7 +150,9 @@ def validate_record(record: dict) -> None:
         if isinstance(addr_byte, bool) or not isinstance(addr_byte, int) or addr_byte < 0:
             raise ValueError("Concrete opcode addr_byte must be a non-negative integer")
         if is_host_opcode:
-            expected_addr_vec = addr_vec_from_byte_address(addr_byte, addr_vec_size=len(record["addr_vec"]))
+            expected_addr_vec = addr_vec_from_byte_address(
+                addr_byte, addr_vec_size=len(record["addr_vec"]), address_layout=resolved_layout
+            )
             if record["addr_vec"] != expected_addr_vec:
                 raise ValueError("Concrete READ/WRITE addr_vec must match decomposed addr_byte")
     if "addr_byte_stride" in record:
@@ -152,7 +161,11 @@ def validate_record(record: dict) -> None:
         addr_byte_stride = record["addr_byte_stride"]
         if isinstance(addr_byte_stride, bool) or not isinstance(addr_byte_stride, int) or addr_byte_stride <= 0:
             raise ValueError("Concrete opcode addr_byte_stride must be a positive integer")
-        addr_vec_from_byte_address(record["addr_byte"] + (repeat - 1) * addr_byte_stride, addr_vec_size=len(record["addr_vec"]))
+        addr_vec_from_byte_address(
+            record["addr_byte"] + (repeat - 1) * addr_byte_stride,
+            addr_vec_size=len(record["addr_vec"]),
+            address_layout=resolved_layout,
+        )
 
     # In-memory bank interleaving fields (PIM_MAC only; compact expansion).
     _INTERLEAVE_FIELDS = {
@@ -185,15 +198,59 @@ def validate_record(record: dict) -> None:
         isi = record["interleave_start_idx"]
         if isinstance(isi, bool) or not isinstance(isi, int) or isi < 0:
             raise ValueError("Concrete opcode interleave_start_idx must be a non-negative integer")
-    if "bank_positions" in record or "bank_counts" in record:
-        if "bank_positions" not in record or "bank_counts" not in record:
-            raise ValueError("Concrete opcode bank_positions and bank_counts must be provided together")
-        bp = record["bank_positions"]
-        bc = record["bank_counts"]
-        if not isinstance(bp, list) or not isinstance(bc, list) or len(bp) != len(bc) or not bp:
-            raise ValueError("Concrete opcode bank_positions and bank_counts must be non-empty lists of equal length")
-        if any(not isinstance(v, int) for v in bp + bc):
-            raise ValueError("Concrete opcode bank_positions and bank_counts entries must be integers")
+    if "bank_sequence" in record:
+        if resolved_layout is None:
+            raise ValueError("Concrete bank interleaving validation requires address_layout")
+        level_names = list(resolved_layout["level_names"])
+        level_sizes = [int(value) for value in resolved_layout["level_sizes"]]
+        row_level = int(record.get("row_level", level_names.index("Row")))
+        col_level = int(record.get("col_level", level_names.index("Column")))
+        for field, level in (("row_level", row_level), ("col_level", col_level)):
+            if level < 0 or level >= len(level_names):
+                raise ValueError(f"Concrete opcode {field} must fit within addr_vec")
+        if level_names[row_level] != "Row" or level_names[col_level] != "Column":
+            raise ValueError("Concrete opcode row_level/col_level must refer to the resolved Row/Column levels")
+        row_start = int(record.get("row_start", 0))
+        row_count = int(record.get("row_count", 1))
+        column_start = int(record.get("column_start", 0))
+        dependency_count = int(record.get("dependency_count", 0))
+        if row_start < 0 or row_count < 1 or row_start + row_count > level_sizes[row_level]:
+            raise ValueError("Concrete opcode row range exceeds configured hierarchy")
+        if column_start < 0 or dependency_count < 1 or column_start + dependency_count > level_sizes[col_level]:
+            raise ValueError("Concrete opcode column range exceeds configured hierarchy")
+
+        if "bank_positions" in record or "bank_counts" in record:
+            if "bank_positions" not in record or "bank_counts" not in record:
+                raise ValueError("Concrete opcode bank_positions and bank_counts must be provided together")
+            bp = record["bank_positions"]
+            bc = record["bank_counts"]
+            if not isinstance(bp, list) or not isinstance(bc, list) or len(bp) != len(bc) or not bp:
+                raise ValueError("Concrete opcode bank_positions and bank_counts must be non-empty lists of equal length")
+            if any(isinstance(v, bool) or not isinstance(v, int) for v in bp + bc):
+                raise ValueError("Concrete opcode bank_positions and bank_counts entries must be integers")
+            if len(set(bp)) != len(bp) or row_level in bp or col_level in bp:
+                raise ValueError("Concrete opcode bank_positions must be unique and not overlap row/column")
+            total_banks = 1
+            for index, (position, count) in enumerate(zip(bp, bc, strict=True)):
+                if position < 0 or position >= len(level_names):
+                    raise ValueError("Concrete opcode bank_positions entries must fit within addr_vec")
+                if count != level_sizes[position]:
+                    raise ValueError(
+                        f"Concrete opcode bank_counts[{index}]={count} must equal configured "
+                        f"level {level_names[position]} size {level_sizes[position]}"
+                    )
+                total_banks *= count
+        else:
+            bank_level = int(record.get("bank_level", level_names.index("Bank")))
+            if bank_level < 0 or bank_level >= len(level_names):
+                raise ValueError("Concrete opcode bank_level must fit within addr_vec")
+            if level_names[bank_level] != "Bank":
+                raise ValueError("Concrete opcode bank_level must refer to the resolved Bank level")
+            total_banks = level_sizes[bank_level]
+        if any(bank >= total_banks for bank in record["bank_sequence"]):
+            raise ValueError(
+                f"Concrete opcode bank_sequence entries must be in [0, {total_banks})"
+            )
 
     # Optional compact semantic-source traceability (lowered traces only).
     if "sem" in record:
@@ -205,7 +262,7 @@ def validate_record(record: dict) -> None:
 
 
 
-def validate_sequence(records: list[dict]) -> None:
+def validate_sequence(records: list[dict], *, address_layout: Mapping[str, Any] | None = None) -> None:
     mode = "SB"
     saw_bcast_since_hab = False
     expanded_records = 0
@@ -215,7 +272,7 @@ def validate_sequence(records: list[dict]) -> None:
     for index, record in enumerate(records):
         # Accept both rich in-memory records and already-slim v0.2 lines.
         record = record if "provenance" not in record else slim_record(record)
-        validate_record(record)
+        validate_record(record, address_layout=address_layout)
         expanded_records += record["repeat"]
         if expanded_records > max_expanded_records:
             raise ValueError(f"Concrete opcode trace exceeds max expanded records {max_expanded_records}")
@@ -269,10 +326,15 @@ def slim_record(record: dict) -> dict:
     return slim
 
 
-def write_jsonl(records: list[dict], output_path: Path) -> None:
+def write_jsonl(
+    records: list[dict],
+    output_path: Path,
+    *,
+    address_layout: Mapping[str, Any] | None = None,
+) -> None:
     header = build_header()
     slim_records = [slim_record(record) for record in records]
-    validate_sequence(slim_records)
+    validate_sequence(slim_records, address_layout=address_layout)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with output_path.open("w", encoding="utf-8") as handle:
         handle.write(stable_json_dumps(header) + "\n")
@@ -280,7 +342,11 @@ def write_jsonl(records: list[dict], output_path: Path) -> None:
             handle.write(stable_json_dumps(record) + "\n")
 
 
-def read_jsonl(input_path: Path) -> tuple[dict, list[dict]]:
+def read_jsonl(
+    input_path: Path,
+    *,
+    address_layout: Mapping[str, Any] | None = None,
+) -> tuple[dict, list[dict]]:
     """Read a v0.2 trace: returns (validated header, validated slim records)."""
     lines = [line for line in Path(input_path).read_text(encoding="utf-8").splitlines() if line.strip()]
     if not lines:
@@ -288,7 +354,7 @@ def read_jsonl(input_path: Path) -> tuple[dict, list[dict]]:
     header = json.loads(lines[0])
     validate_header(header)
     records = [json.loads(line) for line in lines[1:]]
-    validate_sequence(records)
+    validate_sequence(records, address_layout=address_layout)
     return header, records
 
 
