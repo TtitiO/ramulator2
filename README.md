@@ -137,6 +137,13 @@ figures, and release checks remain in the parent PIMScope repository. New
 simulator functionality should be implemented in this package or in the
 underlying Ramulator component packages, not in a paper script.
 
+The current PIMScope backend supports `LPDDR5PIM` only. This repository also
+contains a generic `LPDDR6` DRAM standard, but that model does not provide
+LPDDR6 PIM commands, a compatible PIM controller/frontend, or validated PIM
+trace and power semantics. The parent release checklist tracks a deliberate
+LPDDR6-PIM adaptation; users must not substitute `LPDDR6` behind the
+LPDDR5-PIM controller and interpret the result as LPDDR6-PIM.
+
 The parent repository's `pimscope` command is a thin file/argument adapter over
 this API. The old `scripts.lib.*` imports are compatibility shims for one
 migration release and are deprecated.

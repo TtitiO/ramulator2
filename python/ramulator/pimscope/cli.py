@@ -193,7 +193,10 @@ def _cmd_run(args: argparse.Namespace) -> int:
 def build_parser(*, prog: str = "ramulator-pimscope") -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog=prog,
-        description="Validate and run configurable LPDDR5-PIM workload-surrogate experiments",
+        description=(
+            "Validate and run configurable LPDDR5-PIM workload-surrogate "
+            "experiments (LPDDR6-PIM planned)"
+        ),
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
