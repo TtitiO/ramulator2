@@ -21,6 +21,15 @@ def _manifest():
     )
 
 
+def test_unsupported_topology_is_rejected_by_public_manifest():
+    raw = _manifest()
+    raw["hardware"]["topology"] = {"controllers": 1, "channels": 2}
+    import pytest
+
+    with pytest.raises(ValueError, match=r"hardware\.topology\.channels.*unsupported"):
+        resolve_experiment_manifest(raw, source="test")
+
+
 def test_manifest_and_backend_are_public():
     resolved = resolve_experiment_manifest(_manifest(), source="test")
     backend = validate_backend(resolved)

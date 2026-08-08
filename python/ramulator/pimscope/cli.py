@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import platform
+import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -28,6 +31,105 @@ def _dump_json(payload: Any) -> str:
 def _load_resolved(path: Path, overrides: list[str]):
     raw = apply_overrides(load_raw_manifest(path), overrides)
     return resolve_experiment_manifest(raw, source=str(path.resolve()))
+
+
+def _git_revision(repo: Path) -> str:
+    try:
+        return subprocess.check_output(
+            ["git", "-C", str(repo), "rev-parse", "HEAD"],
+            text=True,
+            stderr=subprocess.DEVNULL,
+        ).strip()
+    except (OSError, subprocess.CalledProcessError):
+        return "unknown"
+
+
+def _find_ramulator_root(package_path: Path) -> Path | None:
+    for candidate in (package_path.parent.parent.parent, *package_path.parents):
+        if (candidate / "CMakeLists.txt").exists() and (
+            candidate / "python" / "ramulator"
+        ).exists():
+            return candidate
+    return None
+
+
+def _doctor_check(name: str, check) -> dict[str, Any]:
+    try:
+        details = check()
+    except Exception as exc:  # doctor must report all failures in one invocation
+        return {"name": name, "status": "FAIL", "error": f"{type(exc).__name__}: {exc}"}
+    return {"name": name, "status": "PASS", **(details or {})}
+
+
+def _cmd_doctor(args: argparse.Namespace) -> int:
+    checks: list[dict[str, Any]] = []
+
+    def python_check() -> dict[str, Any]:
+        if sys.version_info < (3, 10):
+            raise RuntimeError("Python >= 3.10 is required")
+        return {"version": platform.python_version(), "supported": True}
+
+    checks.append(_doctor_check("python", python_check))
+
+    def package_check() -> dict[str, Any]:
+        import ramulator
+
+        package_path = Path(ramulator.__file__).resolve()
+        root = _find_ramulator_root(package_path)
+        details = {"package": str(package_path)}
+        if root is not None:
+            details.update({"repository": str(root), "commit": _git_revision(root)})
+        return details
+
+    checks.append(_doctor_check("ramulator-package", package_check))
+
+    def native_check() -> dict[str, Any]:
+        import ramulator._ramulator as native
+
+        return {"extension": str(Path(native.__file__).resolve())}
+
+    checks.append(_doctor_check("native-extension", native_check))
+
+    def component_check() -> dict[str, Any]:
+        import ramulator
+
+        dram = ramulator.dram.LPDDR5PIM(
+            org_preset="LPDDR5_8Gb_x16",
+            timing_preset="LPDDR5_6400",
+            pim_datatype="int8",
+            pim_banks_per_block=2,
+            pim_mac_execution_model="shared_block_serial",
+        )
+        organization, timing = dram.resolve()
+        return {
+            "dram_class": type(dram).__name__,
+            "rank": organization.get("rank"),
+            "bank": organization.get("bank"),
+            "timing_tCK_ps": timing.get("tCK_ps"),
+        }
+
+    checks.append(_doctor_check("lpddr5-pim-component", component_check))
+
+    if args.config is not None:
+        checks.append(
+            _doctor_check(
+                "manifest-backend",
+                lambda: {
+                    "manifest": str(args.config.resolve()),
+                    "fingerprint": (_resolved := _load_resolved(args.config, [])).fingerprint,
+                    "address_layout": validate_backend(_resolved)["address_layout"],
+                },
+            )
+        )
+
+    valid = all(check["status"] == "PASS" for check in checks)
+    payload = {
+        "doctor": "pimscope-doctor-v1",
+        "valid": valid,
+        "checks": checks,
+    }
+    print(_dump_json(payload), end="")
+    return 0 if valid else 1
 
 
 def _cmd_validate(args: argparse.Namespace) -> int:
@@ -94,6 +196,16 @@ def build_parser(*, prog: str = "ramulator-pimscope") -> argparse.ArgumentParser
         description="Validate and run configurable LPDDR5-PIM workload-surrogate experiments",
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
+
+    doctor = subparsers.add_parser(
+        "doctor", help="check the Python package, native extension, and optional manifest backend"
+    )
+    doctor.add_argument(
+        "--config",
+        type=Path,
+        help="also validate this JSON/YAML manifest and its resolved backend",
+    )
+    doctor.set_defaults(func=_cmd_doctor)
 
     validate = subparsers.add_parser(
         "validate", help="validate a JSON/YAML manifest and print the resolved configuration"
@@ -167,7 +279,7 @@ def main(
     args.provenance = provenance
     try:
         return args.func(args)
-    except (OSError, RuntimeError, ValueError) as exc:
+    except (ImportError, OSError, RuntimeError, ValueError) as exc:
         parser.exit(2, f"{prog}: error: {exc}\n")
 
 

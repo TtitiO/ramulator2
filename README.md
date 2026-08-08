@@ -122,6 +122,7 @@ print(result["simulation"]["cycles"])
 The fork also installs a standalone command and ships a runnable example:
 
 ```bash
+ramulator-pimscope doctor --config examples/pimscope_custom_model.json
 ramulator-pimscope validate examples/pimscope_custom_model.json
 ramulator-pimscope run examples/pimscope_custom_model.json \
   --output /tmp/pimscope-result.json

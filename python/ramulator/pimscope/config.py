@@ -38,6 +38,10 @@ DEFAULT_HARDWARE = {
         "clock_ratio": 1,
         "channel_mapper": "CacheLineInterleave",
     },
+    "topology": {
+        "controllers": 1,
+        "channels": 1,
+    },
     "frontend_clock_ratio": 4,
 }
 
@@ -65,6 +69,7 @@ SUPPORTED_HARDWARE_FIELDS = {
     "pim",
     "controller",
     "memory_system",
+    "topology",
     "frontend_clock_ratio",
 }
 SUPPORTED_WORKLOAD_FIELDS = set(DEFAULT_WORKLOAD) | {"datatype"}
@@ -92,6 +97,7 @@ REQUIRED_MODEL_SPEC_FIELDS = {
 }
 SUPPORTED_CONTROLLER_FIELDS = {"scheduler", "refresh_manager", "row_policy", "addr_mapper"}
 SUPPORTED_MEMORY_SYSTEM_FIELDS = {"clock_ratio", "channel_mapper"}
+SUPPORTED_TOPOLOGY_FIELDS = {"controllers", "channels"}
 SUPPORTED_SCHEDULERS = {"FRFCFS", "FRFCFSRowHit"}
 SUPPORTED_REFRESH_MANAGERS = {"NoRefresh", "AllBank", "PerBank"}
 SUPPORTED_ROW_POLICIES = {"Open", "ClosedCAP"}
@@ -222,13 +228,34 @@ def _resolve_hardware(raw: Any) -> dict[str, Any]:
     for field in ("dram_class", "org_preset", "timing_preset", "frontend_clock_ratio"):
         if field in supplied:
             hardware[field] = copy.deepcopy(supplied[field])
-    for field in ("org_overrides", "timing_overrides", "pim", "controller", "memory_system"):
+    for field in (
+        "org_overrides",
+        "timing_overrides",
+        "pim",
+        "controller",
+        "memory_system",
+        "topology",
+    ):
         if field in supplied:
             section = _expect_mapping(supplied[field], f"hardware.{field}")
             if field in {"org_overrides", "timing_overrides"}:
                 hardware[field] = copy.deepcopy(section)
             else:
                 hardware[field].update(copy.deepcopy(section))
+
+    _reject_unknown(hardware["topology"], SUPPORTED_TOPOLOGY_FIELDS, "hardware.topology")
+    for field in SUPPORTED_TOPOLOGY_FIELDS:
+        _positive_int(hardware["topology"][field], f"hardware.topology.{field}")
+    if hardware["topology"]["controllers"] != 1:
+        _fail(
+            "hardware.topology.controllers",
+            "unsupported by the public runner; only one controller is currently validated",
+        )
+    if hardware["topology"]["channels"] != 1:
+        _fail(
+            "hardware.topology.channels",
+            "unsupported by the public runner; only one channel is currently validated",
+        )
 
     if hardware["dram_class"] != "LPDDR5PIM":
         _fail(
