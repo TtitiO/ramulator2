@@ -157,9 +157,9 @@ class LPDDR5PIMConcreteTrace : public IFrontEnd, public Implementation {
     // Per-record inflight cap.  Only a bank-rotating per-bank PIM_MAC record
     // (non-empty bank_sequence) may have multiple issues outstanding at once:
     // consecutive issues target different banks (bank_sequence rotation) and are
-    // genuinely independent, so non-interfering banks (different MPU groups, no
-    // shared dependency) execute in parallel.  The controller still serializes
-    // same-bank and same-MPU-group ops, so this exposes real inter-bank
+    // genuinely independent, so non-interfering banks (different shared-block groups,
+    // no shared dependency) execute in parallel.  The controller still serializes
+    // same-bank and same-shared-block ops, so this exposes real inter-bank
     // parallelism without overstating it.
     //
     // Everything else (all-bank PIM_MAC_AB, mode switches SB/HAB/HAB_PIM/BCAST,

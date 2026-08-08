@@ -21,6 +21,7 @@ from ramulator.pimscope.backend import (
     replay_concrete_trace,
     time_unit_ns,
 )
+from ramulator.pimscope.compat import canonicalize_legacy_pim_config, canonicalize_legacy_result
 from ramulator.pimscope.config import (
     MANIFEST_SCHEMA_VERSION,
     ResolvedExperiment,
@@ -34,9 +35,29 @@ from ramulator.pimscope.experiment import (
     run_experiment,
     validate_backend,
 )
+from ramulator.pimscope.schema import (
+    AGGREGATE_SCHEMA_NAMES,
+    AGGREGATE_SCHEMA_VERSION,
+    RESULT_SCHEMA_NAME,
+    RESULT_SCHEMA_VERSION,
+    load_json_object,
+    validate_aggregate,
+    validate_result,
+    validate_trace_file,
+)
 
 __all__ = [
     "MANIFEST_SCHEMA_VERSION",
+    "canonicalize_legacy_pim_config",
+    "canonicalize_legacy_result",
+    "AGGREGATE_SCHEMA_NAMES",
+    "AGGREGATE_SCHEMA_VERSION",
+    "RESULT_SCHEMA_NAME",
+    "RESULT_SCHEMA_VERSION",
+    "load_json_object",
+    "validate_aggregate",
+    "validate_result",
+    "validate_trace_file",
     "ResolvedExperiment",
     "apply_overrides",
     "load_experiment_manifest",

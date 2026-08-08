@@ -41,7 +41,7 @@ def _ramulator_defaults(manifest: dict) -> dict:
     required = {
         "bank_sequence",
         "bank_sequence_order",
-        "pim_banks_per_mpu",
+        "pim_banks_per_block",
         "burst_length",
         "row_start",
         "row_count",
@@ -96,7 +96,7 @@ def _mapping_policy(manifest: dict) -> dict:
         {
             "controller_bank_order": defaults["bank_sequence_order"],
             "bank_sequence": list(defaults["bank_sequence"]),
-            "pim_banks_per_mpu": int(defaults["pim_banks_per_mpu"]),
+            "pim_banks_per_block": int(defaults["pim_banks_per_block"]),
             "burst_length": int(defaults["burst_length"]),
             "row_start": int(defaults["row_start"]),
             "row_count": int(defaults["row_count"]),

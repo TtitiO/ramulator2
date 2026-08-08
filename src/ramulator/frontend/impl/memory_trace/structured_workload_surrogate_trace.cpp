@@ -732,7 +732,7 @@ class StructuredWorkloadSurrogateTrace : public IFrontEnd, public Implementation
     require_present(mapping_policy, "host_policy", path, line_num);
     require_present(mapping_policy, "pim_policy", path, line_num);
     require_present(mapping_policy, "bank_sequence_policy", path, line_num);
-    require_present(mapping_policy, "mpu_grouping_policy", path, line_num);
+    require_present(mapping_policy, "shared_block_grouping_policy", path, line_num);
   }
 };
 

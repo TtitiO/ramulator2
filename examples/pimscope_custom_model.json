@@ -4,8 +4,8 @@
   "hardware": {
     "pim": {
       "pim_datatype": "int8",
-      "pim_banks_per_mpu": 2,
-      "pim_mac_execution_model": "shared_mpu_serial"
+      "pim_banks_per_block": 2,
+      "pim_mac_execution_model": "shared_block_serial"
     }
   },
   "workload": {

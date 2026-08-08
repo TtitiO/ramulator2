@@ -115,13 +115,13 @@ def _collect_observability(stats: dict, tmpdir: Path, cfg: dict) -> dict:
         "avg_pim_launch_wait",
         "avg_pim_response_latency",
         "pim_capacity_stalls",
-        "pim_mpu_group_stalls",
+        "pim_shared_block_stalls",
         "pim_dependency_stalls",
         "pim_inflight_peak",
-        "pim_banks_per_mpu",
-        "pim_mpu_group_count",
+        "pim_banks_per_block",
+        "pim_shared_block_count",
         "total_banks",
-        "effective_mpu_groups",
+        "effective_shared_blocks",
         "pim_ab_completion_latency_cycles",
     ):
         if key in ctrl:

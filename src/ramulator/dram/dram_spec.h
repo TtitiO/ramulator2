@@ -117,11 +117,11 @@ struct DRAMSpec {
   // PIM execution-resource contract. These fields are serialized by
   // PIM-capable DRAM standards and validated before controller construction.
   // A PIM_MAC command launch occupies pim_slots_per_request slots in one bank
-  // for pipeline + movement + writeback cycles. Shared-MPU arbitration is an
+  // for pipeline + movement + writeback cycles. Shared-block arbitration is an
   // independent constraint selected by pim_mac_execution_model.
   int pim_blocks_per_bank = 1;
-  int pim_banks_per_mpu = 2;
-  std::string pim_mac_execution_model = "shared_mpu_serial";
+  int pim_banks_per_block = 2;
+  std::string pim_mac_execution_model = "shared_block_serial";
   std::string pim_datatype = "int8";
   std::string pim_datatype_class = "int8";
   bool pim_datatype_behavior_enabled = false;

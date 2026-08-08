@@ -13,6 +13,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from ramulator.pimscope.compat import canonicalize_legacy_pim_config
+
 MANIFEST_SCHEMA_VERSION = 1
 
 DEFAULT_HARDWARE = {
@@ -23,8 +25,8 @@ DEFAULT_HARDWARE = {
     "timing_overrides": {},
     "pim": {
         "pim_datatype": "int8",
-        "pim_banks_per_mpu": 2,
-        "pim_mac_execution_model": "shared_mpu_serial",
+        "pim_banks_per_block": 2,
+        "pim_mac_execution_model": "shared_block_serial",
     },
     "controller": {
         "scheduler": "FRFCFS",
@@ -107,13 +109,13 @@ SUPPORTED_SCHEDULE_POLICIES = {"serialized", "overlap_independent_heads"}
 SUPPORTED_PIM_DATATYPES = {"int8", "fp16", "int16", "bf16"}
 SUPPORTED_WORKLOAD_DATATYPES = {"int8", "fp16", "bf16"}
 SUPPORTED_FFN_VARIANTS = {"swiglu_3proj", "geglu_3proj", "relu_2proj"}
-SUPPORTED_PIM_EXECUTION_MODELS = {"shared_mpu_serial", "subbank_overlap_experimental"}
+SUPPORTED_PIM_EXECUTION_MODELS = {"shared_block_serial", "subbank_overlap_experimental"}
 
 # Public manifest fields accepted by ramulator.dram.LPDDR5PIM. Compatibility
 # aliases/deprecated scale parameters are intentionally excluded.
 SUPPORTED_PIM_FIELDS = {
     "pim_blocks_per_bank",
-    "pim_banks_per_mpu",
+    "pim_banks_per_block",
     "pim_mac_execution_model",
     "pim_datatype",
     "pim_datatype_class",
@@ -205,7 +207,9 @@ def _load_text_manifest(path: Path) -> dict[str, Any]:
 
 def _resolve_hardware(raw: Any) -> dict[str, Any]:
     hardware = copy.deepcopy(DEFAULT_HARDWARE)
-    supplied = _expect_mapping(raw or {}, "hardware")
+    supplied = copy.deepcopy(_expect_mapping(raw or {}, "hardware"))
+    if isinstance(supplied.get("pim"), dict):
+        supplied["pim"] = canonicalize_legacy_pim_config(supplied["pim"])
     _reject_unknown(supplied, SUPPORTED_HARDWARE_FIELDS, "hardware")
 
     for field in ("dram_class", "org_preset", "timing_preset", "frontend_clock_ratio"):
@@ -280,7 +284,7 @@ def _resolve_hardware(raw: Any) -> dict[str, Any]:
 
     for field in (
         "pim_blocks_per_bank",
-        "pim_banks_per_mpu",
+        "pim_banks_per_block",
         "pim_datatype_bits",
         "pim_simd_width_bits",
         "pim_lanes",

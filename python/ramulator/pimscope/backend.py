@@ -19,19 +19,19 @@ LPDDR5_PIM_CONFIG = {
     "timing_preset": "LPDDR5_6400",
     "dram_kwargs": {
         "pim_datatype": "int8",
-        "pim_banks_per_mpu": 2,
-        "pim_mac_execution_model": "shared_mpu_serial",
+        "pim_banks_per_block": 2,
+        "pim_mac_execution_model": "shared_block_serial",
     },
     "frontend_clock_ratio": 4,
 }
 
 
 def pim_cfg_per_bank() -> dict:
-    return {"pim_banks_per_mpu": 1, "pim_mac_execution_model": "shared_mpu_serial"}
+    return {"pim_banks_per_block": 1, "pim_mac_execution_model": "shared_block_serial"}
 
 
 def pim_cfg_shared() -> dict:
-    return {"pim_banks_per_mpu": 2, "pim_mac_execution_model": "shared_mpu_serial"}
+    return {"pim_banks_per_block": 2, "pim_mac_execution_model": "shared_block_serial"}
 
 
 def create_dram(cfg: dict | None = None, *, dram_kwargs_overrides: dict | None = None):
@@ -230,16 +230,16 @@ def replay_concrete_trace(
             )
             if k in fe
         },
-        "pim_mpu_group_stalls": _stat_int("pim_mpu_group_stalls"),
+        "pim_shared_block_stalls": _stat_int("pim_shared_block_stalls"),
         "pim_dependency_stalls": _stat_int("pim_dependency_stalls"),
         "pim_capacity_stalls": _stat_int("pim_capacity_stalls"),
         "pim_inflight_peak": _stat_int("pim_inflight_peak"),
         "pim_simultaneous_active_banks_peak": _stat_int("pim_simultaneous_active_banks_peak"),
-        "pim_banks_per_mpu": _stat_int("pim_banks_per_mpu"),
-        "effective_mpu_groups": _stat_int("effective_mpu_groups"),
+        "pim_banks_per_block": _stat_int("pim_banks_per_block"),
+        "effective_shared_blocks": _stat_int("effective_shared_blocks"),
         "pim_ab_completion_latency_cycles": _stat_int("pim_ab_completion_latency_cycles"),
         "num_bank_timing_blocked_cycles": _stat_int("num_bank_timing_blocked_cycles"),
-        "num_mpu_group_busy_blocked_cycles": _stat_int("num_mpu_group_busy_blocked_cycles"),
+        "num_shared_block_busy_blocked_cycles": _stat_int("num_shared_block_busy_blocked_cycles"),
     }
 
 

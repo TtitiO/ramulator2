@@ -8,11 +8,11 @@ void DRAMSpec::load_config(const ConfigNode& config) {
   // PIM fields are serialized only by PIM-capable standards. Keep defensive
   // validation here because native callers can bypass the Python DSL.
   pim_blocks_per_bank = dram["pim_blocks_per_bank"].as<int>(1);
-  pim_banks_per_mpu = dram["pim_banks_per_mpu"].as<int>(2);
-  pim_mac_execution_model = dram["pim_mac_execution_model"].as<std::string>("shared_mpu_serial");
-  if (pim_mac_execution_model != "shared_mpu_serial" && pim_mac_execution_model != "subbank_overlap_experimental") {
+  pim_banks_per_block = dram["pim_banks_per_block"].as<int>(2);
+  pim_mac_execution_model = dram["pim_mac_execution_model"].as<std::string>("shared_block_serial");
+  if (pim_mac_execution_model != "shared_block_serial" && pim_mac_execution_model != "subbank_overlap_experimental") {
     throw std::runtime_error("DRAMSpec: unknown pim_mac_execution_model '" + pim_mac_execution_model +
-                             "'; supported values: shared_mpu_serial, subbank_overlap_experimental");
+                             "'; supported values: shared_block_serial, subbank_overlap_experimental");
   }
   pim_datatype = dram["pim_datatype"].as<std::string>("int8");
   pim_datatype_class = dram["pim_datatype_class"].as<std::string>(pim_datatype);
@@ -109,8 +109,8 @@ void DRAMSpec::load_config(const ConfigNode& config) {
   if (pim_slots_per_request > pim_blocks_per_bank) {
     throw std::runtime_error("DRAMSpec: pim_slots_per_request must not exceed pim_blocks_per_bank");
   }
-  if (pim_banks_per_mpu <= 0) {
-    throw std::runtime_error("DRAMSpec: pim_banks_per_mpu must be positive");
+  if (pim_banks_per_block <= 0) {
+    throw std::runtime_error("DRAMSpec: pim_banks_per_block must be positive");
   }
   if (is_pim_standard &&
       (pim_mac_issue_interval_cycles <= 0 || pim_mac_pipeline_latency_cycles <= 0)) {

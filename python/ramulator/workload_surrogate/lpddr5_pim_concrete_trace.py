@@ -15,7 +15,6 @@ from typing import Any, Mapping
 from ramulator.dram.addressing import addr_vec_from_byte_address as _map_byte_address
 from ramulator.dram.addressing import validate_addr_vec
 
-
 CONCRETE_SCHEMA_VERSION = "lpddr5-pim-opcode-v0.2"
 CONCRETE_GENERATOR_VERSION = "lpddr5-pim-opcode-generator-v0.1"
 CONCRETE_OPCODES = {"READ", "WRITE", "SB", "HAB", "HAB_PIM", "PIM_BCAST", "PIM_MAC", "PIM_MAC_AB"}
@@ -78,7 +77,11 @@ def addr_vec_from_byte_address(
     )
 
 
-def concrete_provenance(*, source_kind: str = "generated", manifest_name: str = "lpddr5_pim_concrete_minimal") -> dict:
+def concrete_provenance(
+    *,
+    source_kind: str = "generated",
+    manifest_name: str = "lpddr5_pim_concrete_minimal",
+) -> dict:
     return {
         "source_kind": source_kind,
         "manifest": manifest_name,
@@ -102,7 +105,10 @@ def build_header() -> dict:
 
 def validate_header(header: dict) -> None:
     if header.get("schema_version") != CONCRETE_SCHEMA_VERSION:
-        raise ValueError(f"Unsupported concrete opcode schema_version: {header.get('schema_version')}")
+        raise ValueError(
+            "Unsupported concrete opcode schema_version: "
+            f"{header.get('schema_version')}"
+        )
 
 
 def validate_record(record: dict, *, address_layout: Mapping[str, Any] | None = None) -> None:
@@ -113,10 +119,16 @@ def validate_record(record: dict, *, address_layout: Mapping[str, Any] | None = 
     # v0.2 records must not carry file-level constants (those live in the header).
     forbidden = {"schema_version", "provenance", "record_id"} & set(record)
     if forbidden:
-        raise ValueError(f"Concrete opcode record must not carry header/constant fields: {sorted(forbidden)}")
+        raise ValueError(
+            "Concrete opcode record must not carry header/constant fields: "
+            f"{sorted(forbidden)}"
+        )
     opcode = record["opcode"]
     if opcode in FORBIDDEN_RAW_ATTACC_OPCODES:
-        raise ValueError(f"Raw AttAcc opcode is not part of the LPDDR5-PIM concrete schema: {opcode}")
+        raise ValueError(
+            "Raw AttAcc opcode is not part of the LPDDR5-PIM concrete schema: "
+            f"{opcode}"
+        )
     if opcode not in CONCRETE_OPCODES:
         raise ValueError(f"Unsupported LPDDR5-PIM concrete opcode: {opcode}")
     repeat = record["repeat"]
@@ -159,7 +171,11 @@ def validate_record(record: dict, *, address_layout: Mapping[str, Any] | None = 
         if "addr_byte" not in record:
             raise ValueError("Concrete opcode addr_byte_stride requires addr_byte")
         addr_byte_stride = record["addr_byte_stride"]
-        if isinstance(addr_byte_stride, bool) or not isinstance(addr_byte_stride, int) or addr_byte_stride <= 0:
+        if (
+            isinstance(addr_byte_stride, bool)
+            or not isinstance(addr_byte_stride, int)
+            or addr_byte_stride <= 0
+        ):
             raise ValueError("Concrete opcode addr_byte_stride must be a positive integer")
         addr_vec_from_byte_address(
             record["addr_byte"] + (repeat - 1) * addr_byte_stride,
@@ -209,31 +225,58 @@ def validate_record(record: dict, *, address_layout: Mapping[str, Any] | None = 
             if level < 0 or level >= len(level_names):
                 raise ValueError(f"Concrete opcode {field} must fit within addr_vec")
         if level_names[row_level] != "Row" or level_names[col_level] != "Column":
-            raise ValueError("Concrete opcode row_level/col_level must refer to the resolved Row/Column levels")
+            raise ValueError(
+                "Concrete opcode row_level/col_level must refer to the resolved "
+                "Row/Column levels"
+            )
         row_start = int(record.get("row_start", 0))
         row_count = int(record.get("row_count", 1))
         column_start = int(record.get("column_start", 0))
         dependency_count = int(record.get("dependency_count", 0))
         if row_start < 0 or row_count < 1 or row_start + row_count > level_sizes[row_level]:
             raise ValueError("Concrete opcode row range exceeds configured hierarchy")
-        if column_start < 0 or dependency_count < 1 or column_start + dependency_count > level_sizes[col_level]:
+        if (
+            column_start < 0
+            or dependency_count < 1
+            or column_start + dependency_count > level_sizes[col_level]
+        ):
             raise ValueError("Concrete opcode column range exceeds configured hierarchy")
 
         if "bank_positions" in record or "bank_counts" in record:
             if "bank_positions" not in record or "bank_counts" not in record:
-                raise ValueError("Concrete opcode bank_positions and bank_counts must be provided together")
+                raise ValueError(
+                    "Concrete opcode bank_positions and bank_counts must be "
+                    "provided together"
+                )
             bp = record["bank_positions"]
             bc = record["bank_counts"]
-            if not isinstance(bp, list) or not isinstance(bc, list) or len(bp) != len(bc) or not bp:
-                raise ValueError("Concrete opcode bank_positions and bank_counts must be non-empty lists of equal length")
+            if (
+                not isinstance(bp, list)
+                or not isinstance(bc, list)
+                or len(bp) != len(bc)
+                or not bp
+            ):
+                raise ValueError(
+                    "Concrete opcode bank_positions and bank_counts must be "
+                    "non-empty lists of equal length"
+                )
             if any(isinstance(v, bool) or not isinstance(v, int) for v in bp + bc):
-                raise ValueError("Concrete opcode bank_positions and bank_counts entries must be integers")
+                raise ValueError(
+                    "Concrete opcode bank_positions and bank_counts entries "
+                    "must be integers"
+                )
             if len(set(bp)) != len(bp) or row_level in bp or col_level in bp:
-                raise ValueError("Concrete opcode bank_positions must be unique and not overlap row/column")
+                raise ValueError(
+                    "Concrete opcode bank_positions must be unique and not "
+                    "overlap row/column"
+                )
             total_banks = 1
             for index, (position, count) in enumerate(zip(bp, bc, strict=True)):
                 if position < 0 or position >= len(level_names):
-                    raise ValueError("Concrete opcode bank_positions entries must fit within addr_vec")
+                    raise ValueError(
+                        "Concrete opcode bank_positions entries must fit within "
+                        "addr_vec"
+                    )
                 if count != level_sizes[position]:
                     raise ValueError(
                         f"Concrete opcode bank_counts[{index}]={count} must equal configured "
@@ -281,7 +324,10 @@ def validate_sequence(
         validate_record(record, address_layout=address_layout)
         expanded_records += record["repeat"]
         if expanded_records > max_expanded_records:
-            raise ValueError(f"Concrete opcode trace exceeds max expanded records {max_expanded_records}")
+            raise ValueError(
+                "Concrete opcode trace exceeds max expanded records "
+                f"{max_expanded_records}"
+            )
         opcode = record["opcode"]
         if opcode in {"READ", "WRITE"}:
             if mode != "SB":
@@ -295,7 +341,10 @@ def validate_sequence(
             saw_bcast_since_hab = False
         elif opcode == "HAB_PIM":
             if not saw_bcast_since_hab:
-                raise ValueError(f"Concrete opcode record {index} HAB_PIM requires a preceding PIM_BCAST in HAB mode")
+                raise ValueError(
+                    f"Concrete opcode record {index} HAB_PIM requires a preceding "
+                    "PIM_BCAST in HAB mode"
+                )
             mode = "HAB_PIM"
         elif opcode == "PIM_BCAST":
             if mode != "HAB":
@@ -303,7 +352,10 @@ def validate_sequence(
             saw_bcast_since_hab = True
         elif opcode == "PIM_MAC_AB":
             if mode != "HAB_PIM" or not saw_bcast_since_hab:
-                raise ValueError(f"Concrete opcode record {index} PIM_MAC_AB requires HAB_PIM mode after PIM_BCAST")
+                raise ValueError(
+                    f"Concrete opcode record {index} PIM_MAC_AB requires HAB_PIM "
+                    "mode after PIM_BCAST"
+                )
         elif opcode == "PIM_MAC":
             if mode != "SB":
                 raise ValueError(f"Concrete opcode record {index} PIM_MAC requires SB mode")
@@ -324,7 +376,12 @@ def slim_record(record: dict) -> dict:
     if isinstance(semantic_source, dict):
         sem = {
             short: semantic_source[full]
-            for short, full in (("id", "record_id"), ("kind", "kind"), ("layer", "layer"), ("op", "op"))
+            for short, full in (
+                ("id", "record_id"),
+                ("kind", "kind"),
+                ("layer", "layer"),
+                ("op", "op"),
+            )
             if semantic_source.get(full) is not None
         }
         if sem:
@@ -357,15 +414,24 @@ def read_jsonl(
     input_path: Path,
     *,
     address_layout: Mapping[str, Any] | None = None,
+    max_expanded_records: int | None = None,
 ) -> tuple[dict, list[dict]]:
     """Read a v0.2 trace: returns (validated header, validated slim records)."""
-    lines = [line for line in Path(input_path).read_text(encoding="utf-8").splitlines() if line.strip()]
+    lines = [
+        line
+        for line in Path(input_path).read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
     if not lines:
         raise ValueError("Concrete opcode trace is empty")
     header = json.loads(lines[0])
     validate_header(header)
     records = [json.loads(line) for line in lines[1:]]
-    validate_sequence(records, address_layout=address_layout)
+    validate_sequence(
+        records,
+        address_layout=address_layout,
+        max_expanded_records=max_expanded_records,
+    )
     return header, records
 
 

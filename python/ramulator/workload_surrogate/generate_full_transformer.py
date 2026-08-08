@@ -44,7 +44,7 @@ LLAMA2_7B_FFN_HIDDEN_SIZE = 11008
 LLAMA2_7B_DEFAULT_PAST_LEN = 1024
 # The 8Gb LPDDR5-PIM preset exposes 16 bank units (one rank). Dense transformer
 # manifests round-robin PIM_MAC work across all 16 banks so the per-bank (k=1)
-# vs shared-MPU (k=2) comparison matches the F4/F5/F6 device configuration.
+# vs shared two-bank PIM-block (k=2) comparison matches the F4/F5/F6 device configuration.
 DENSE_PIM_BANK_SEQUENCE = list(range(16))
 LLAMA2_13B_NUM_LAYERS = 40
 LLAMA2_13B_NUM_HEADS = 40
@@ -515,7 +515,7 @@ def get_tiny_attention_manifest() -> dict:
         "ramulator_visible_defaults": {
             "bank_sequence": [0, 1, 2, 3],
             "bank_sequence_order": "frontend",
-            "pim_banks_per_mpu": 1,
+            "pim_banks_per_block": 1,
             "burst_length": 1,
             "row_start": 0,
             "row_count": 16,
@@ -526,7 +526,7 @@ def get_tiny_attention_manifest() -> dict:
             "host_policy": "semantic_tensor_io_only",
             "pim_policy": "native_lpddr5_pim_attention_tiles",
             "bank_sequence_policy": "manifest_order",
-            "mpu_grouping_policy": "manifest_pim_banks_per_mpu",
+            "shared_block_grouping_policy": "manifest_pim_banks_per_block",
         },
         "literature_anchors": ["AttAcc workflow ideology only", "LPDDR5-PIM native opcode surface"],
         "non_claims": [
@@ -564,7 +564,7 @@ def get_tiny_ffn_manifest() -> dict:
         "ramulator_visible_defaults": {
             "bank_sequence": [0, 1, 2, 3],
             "bank_sequence_order": "frontend",
-            "pim_banks_per_mpu": 1,
+            "pim_banks_per_block": 1,
             "burst_length": 1,
             "row_start": 0,
             "row_count": 16,
@@ -575,7 +575,7 @@ def get_tiny_ffn_manifest() -> dict:
             "host_policy": "semantic_tensor_io_only",
             "pim_policy": "native_lpddr5_pim_ffn_tiles",
             "bank_sequence_policy": "manifest_order",
-            "mpu_grouping_policy": "manifest_pim_banks_per_mpu",
+            "shared_block_grouping_policy": "manifest_pim_banks_per_block",
         },
         "literature_anchors": ["LPDDR5-PIM native opcode surface"],
         "non_claims": [
@@ -634,7 +634,7 @@ def get_llama2_dense_decoder_attention_manifest(
         "ramulator_visible_defaults": {
             "bank_sequence": list(DENSE_PIM_BANK_SEQUENCE),
             "bank_sequence_order": "frontend",
-            "pim_banks_per_mpu": 1,
+            "pim_banks_per_block": 1,
             "burst_length": 1,
             "row_start": 0,
             "row_count": 16,
@@ -645,7 +645,7 @@ def get_llama2_dense_decoder_attention_manifest(
             "host_policy": "semantic_tensor_io_only",
             "pim_policy": "native_lpddr5_pim_attention_tiles",
             "bank_sequence_policy": "manifest_order",
-            "mpu_grouping_policy": "manifest_pim_banks_per_mpu",
+            "shared_block_grouping_policy": "manifest_pim_banks_per_block",
         },
         "literature_anchors": [
             spec.paper_anchor,
@@ -691,7 +691,7 @@ def get_llama2_dense_decoder_ffn_manifest(
         "ramulator_visible_defaults": {
             "bank_sequence": list(DENSE_PIM_BANK_SEQUENCE),
             "bank_sequence_order": "frontend",
-            "pim_banks_per_mpu": 1,
+            "pim_banks_per_block": 1,
             "burst_length": 1,
             "row_start": 0,
             "row_count": 16,
@@ -702,7 +702,7 @@ def get_llama2_dense_decoder_ffn_manifest(
             "host_policy": "semantic_tensor_io_only",
             "pim_policy": "native_lpddr5_pim_ffn_tiles",
             "bank_sequence_policy": "manifest_order",
-            "mpu_grouping_policy": "manifest_pim_banks_per_mpu",
+            "shared_block_grouping_policy": "manifest_pim_banks_per_block",
         },
         "literature_anchors": [
             spec.paper_anchor,
@@ -831,7 +831,7 @@ def _mixtral_ramulator_defaults() -> dict:
     return {
         "bank_sequence": [0, 1, 2, 3],
         "bank_sequence_order": "frontend",
-        "pim_banks_per_mpu": 1,
+        "pim_banks_per_block": 1,
         "burst_length": 1,
         "row_start": 0,
         "row_count": 16,
@@ -845,7 +845,7 @@ def _mixtral_mapping_policy() -> dict:
         "host_policy": "semantic_tensor_io_only",
         "pim_policy": "native_lpddr5_pim_operator_tiles",
         "bank_sequence_policy": "manifest_order",
-        "mpu_grouping_policy": "manifest_pim_banks_per_mpu",
+        "shared_block_grouping_policy": "manifest_pim_banks_per_block",
     }
 
 
@@ -1020,7 +1020,7 @@ def get_tiny_moe_manifest() -> dict:
         "ramulator_visible_defaults": {
             "bank_sequence": [0, 1, 2, 3],
             "bank_sequence_order": "frontend",
-            "pim_banks_per_mpu": 1,
+            "pim_banks_per_block": 1,
             "burst_length": 1,
             "row_start": 0,
             "row_count": 16,
@@ -1031,7 +1031,7 @@ def get_tiny_moe_manifest() -> dict:
             "host_policy": "semantic_tensor_io_only",
             "pim_policy": "native_lpddr5_pim_moe_tiles",
             "bank_sequence_policy": "manifest_order",
-            "mpu_grouping_policy": "manifest_pim_banks_per_mpu",
+            "shared_block_grouping_policy": "manifest_pim_banks_per_block",
         },
         "literature_anchors": ["LPDDR5-PIM native opcode surface"],
         "non_claims": [
@@ -1264,7 +1264,7 @@ def _mapping_policy(manifest: dict) -> dict:
         {
             "controller_bank_order": defaults.get("bank_sequence_order", "frontend"),
             "bank_sequence": list(defaults["bank_sequence"]),
-            "pim_banks_per_mpu": int(defaults.get("pim_banks_per_mpu", 1)),
+            "pim_banks_per_block": int(defaults.get("pim_banks_per_block", 1)),
             "burst_length": int(defaults["burst_length"]),
             "row_start": int(defaults["row_start"]),
             "row_count": int(defaults["row_count"]),

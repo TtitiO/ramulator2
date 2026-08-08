@@ -8,8 +8,8 @@ pytestmark = pytest.mark.controller_scheduling
 
 def make_dut(
     pim_blocks_per_bank: int = 1,
-    pim_banks_per_mpu: int = 2,
-    pim_mac_execution_model: str = "shared_mpu_serial",
+    pim_banks_per_block: int = 2,
+    pim_mac_execution_model: str = "shared_block_serial",
     pim_datatype: str = "int8",
     pim_datatype_class: str | None = None,
     pim_datatype_behavior_enabled: bool = False,
@@ -22,7 +22,7 @@ def make_dut(
         timing_preset="LPDDR5_6400",
         rank=rank,
         pim_blocks_per_bank=pim_blocks_per_bank,
-        pim_banks_per_mpu=pim_banks_per_mpu,
+        pim_banks_per_block=pim_banks_per_block,
         pim_mac_execution_model=pim_mac_execution_model,
         pim_datatype=pim_datatype,
         pim_datatype_class=pim_datatype_class,
@@ -314,28 +314,28 @@ def test_invalid_pim_mac_execution_model_is_rejected():
         make_dut(pim_mac_execution_model="same_bank_overlap")
 
 
-def test_invalid_pim_banks_per_mpu_is_rejected():
-    with pytest.raises(ValueError, match="pim_banks_per_mpu must be positive"):
-        make_dut(pim_banks_per_mpu=0)
+def test_invalid_pim_banks_per_block_is_rejected():
+    with pytest.raises(ValueError, match="pim_banks_per_block must be positive"):
+        make_dut(pim_banks_per_block=0)
 
-    with pytest.raises(ValueError, match="pim_banks_per_mpu must be positive"):
-        make_dut(pim_banks_per_mpu=-1)
+    with pytest.raises(ValueError, match="pim_banks_per_block must be positive"):
+        make_dut(pim_banks_per_block=-1)
 
 
-def test_incompatible_pim_banks_per_mpu_is_rejected():
+def test_incompatible_pim_banks_per_block_is_rejected():
     with pytest.raises(
         ValueError,
-        match=r"banks per rank \(16\) must be divisible by pim_banks_per_mpu \(3\)",
+        match=r"banks per rank \(16\) must be divisible by pim_banks_per_block \(3\)",
     ):
-        make_dut(pim_banks_per_mpu=3)
+        make_dut(pim_banks_per_block=3)
 
 
-def test_pim_banks_per_mpu_larger_than_rank_scope_is_rejected():
+def test_pim_banks_per_block_larger_than_rank_scope_is_rejected():
     with pytest.raises(
         ValueError,
-        match=r"pim_banks_per_mpu \(32\) exceeds banks per rank \(16\)",
+        match=r"pim_banks_per_block \(32\) exceeds banks per rank \(16\)",
     ):
-        make_dut(rank=2, pim_banks_per_mpu=32)
+        make_dut(rank=2, pim_banks_per_block=32)
 
 
 def test_pimcompute_completion_is_delayed_beyond_launch():
@@ -391,7 +391,7 @@ def test_default_same_bank_independent_pim_launches_serialize_with_two_slots():
     dut.assert_gap(2, 3, dut.timings["nPIM_MAC_LAT"] + 1, history=history)
     assert stats["num_pim_reqs_served"] == 2
     assert stats["pim_dependency_stalls"] == 0
-    assert stats["pim_mpu_group_stalls"] == 0
+    assert stats["pim_shared_block_stalls"] == 0
     assert stats["num_bank_timing_blocked_cycles"] > 0
     assert stats["pim_capacity_stalls"] == 0
     assert stats["pim_inflight_peak"] == 1
@@ -415,7 +415,7 @@ def test_experimental_same_bank_independent_pim_launches_can_overlap_with_two_sl
     dut.assert_gap(2, 3, dut.timings["nPIM_MAC_LAT"], history=history)
     assert stats["num_pim_reqs_served"] == 2
     assert stats["pim_dependency_stalls"] == 0
-    assert stats["pim_mpu_group_stalls"] == 0
+    assert stats["pim_shared_block_stalls"] == 0
     assert stats["pim_capacity_stalls"] == 0
     assert stats["pim_inflight_peak"] == 2
     assert stats["pim_mac_execution_model"] == 1
@@ -438,14 +438,14 @@ def test_same_bank_independent_pim_launches_serialize_when_bank_has_one_slot():
     dut.assert_gap(2, 3, dut.timings["nPIM_MAC_LAT"] + 1, history=history)
     assert stats["num_pim_reqs_served"] == 2
     assert stats["pim_dependency_stalls"] == 0
-    assert stats["pim_mpu_group_stalls"] == 0
+    assert stats["pim_shared_block_stalls"] == 0
     assert stats["num_bank_timing_blocked_cycles"] > 0
     assert stats["pim_capacity_stalls"] == 0
     assert stats["pim_inflight_peak"] == 1
 
 
-def test_shared_mpu_serial_same_mpu_paired_banks_serialize_by_default():
-    dut = make_dut(pim_blocks_per_bank=1, pim_banks_per_mpu=2)
+def test_shared_block_serial_same_shared_block_paired_banks_serialize_by_default():
+    dut = make_dut(pim_blocks_per_bank=1, pim_banks_per_block=2)
     bank0 = dut.addr_vec(Rank=0, BankGroup=0, Bank=0, Row=9, Column=0)
     bank1 = dut.addr_vec(Rank=0, BankGroup=0, Bank=1, Row=9, Column=0)
 
@@ -463,21 +463,21 @@ def test_shared_mpu_serial_same_mpu_paired_banks_serialize_by_default():
     dut.assert_gap(0, 1, dut.timings["nPIM_MAC_LAT"] + 1, history=pim_cmds)
     assert stats["num_pim_reqs_served"] == 2
     assert stats["pim_dependency_stalls"] == 0
-    assert stats["pim_mpu_group_stalls"] > 0
+    assert stats["pim_shared_block_stalls"] > 0
     assert stats["pim_capacity_stalls"] == 0
     assert stats["pim_inflight_peak"] == 1
-    assert stats["pim_banks_per_mpu"] == 2
-    assert stats["pim_mpu_group_count"] == 8
+    assert stats["pim_banks_per_block"] == 2
+    assert stats["pim_shared_block_count"] == 8
     assert stats["total_banks"] == 16
-    assert stats["effective_mpu_groups"] == 8
-    assert stats["num_mpu_group_busy_blocked_cycles"] > 0
+    assert stats["effective_shared_blocks"] == 8
+    assert stats["num_shared_block_busy_blocked_cycles"] > 0
     assert_pim_latency_split_identity(stats)
     assert stats["pim_service_latency"] == 2 * stats["pim_completion_latency_cycles"]
     assert stats["pim_launch_wait"] > 0
 
 
-def test_shared_mpu_serial_different_mpu_groups_can_overlap():
-    dut = make_dut(pim_blocks_per_bank=1, pim_banks_per_mpu=2)
+def test_shared_block_serial_different_shared_blocks_can_overlap():
+    dut = make_dut(pim_blocks_per_bank=1, pim_banks_per_block=2)
     bank0 = dut.addr_vec(Rank=0, BankGroup=0, Bank=0, Row=9, Column=0)
     bank2 = dut.addr_vec(Rank=0, BankGroup=0, Bank=2, Row=9, Column=0)
 
@@ -495,14 +495,14 @@ def test_shared_mpu_serial_different_mpu_groups_can_overlap():
     dut.assert_gap(0, 1, 4, history=pim_cmds)
     assert stats["num_pim_reqs_served"] == 2
     assert stats["pim_dependency_stalls"] == 0
-    assert stats["pim_mpu_group_stalls"] == 0
+    assert stats["pim_shared_block_stalls"] == 0
     assert stats["pim_capacity_stalls"] == 0
     assert stats["pim_inflight_peak"] == 1
     assert stats["pim_simultaneous_active_banks_peak"] == 2
 
 
-def test_shared_mpu_serial_one_bank_per_mpu_allows_cross_bank_overlap():
-    dut = make_dut(pim_blocks_per_bank=1, pim_banks_per_mpu=1)
+def test_shared_block_serial_one_bank_per_block_allows_cross_bank_overlap():
+    dut = make_dut(pim_blocks_per_bank=1, pim_banks_per_block=1)
     bank0 = dut.addr_vec(Rank=0, BankGroup=0, Bank=0, Row=9, Column=0)
     bank1 = dut.addr_vec(Rank=0, BankGroup=0, Bank=1, Row=9, Column=0)
 
@@ -520,20 +520,20 @@ def test_shared_mpu_serial_one_bank_per_mpu_allows_cross_bank_overlap():
     dut.assert_gap(0, 1, 4, history=pim_cmds)
     assert stats["num_pim_reqs_served"] == 2
     assert stats["pim_dependency_stalls"] == 0
-    assert stats["pim_mpu_group_stalls"] == 0
+    assert stats["pim_shared_block_stalls"] == 0
     assert stats["pim_capacity_stalls"] == 0
     assert stats["pim_inflight_peak"] == 1
     assert stats["pim_simultaneous_active_banks_peak"] == 2
-    assert stats["pim_banks_per_mpu"] == 1
-    assert stats["pim_mpu_group_count"] == 16
+    assert stats["pim_banks_per_block"] == 1
+    assert stats["pim_shared_block_count"] == 16
     assert stats["total_banks"] == 16
-    assert stats["effective_mpu_groups"] == 16
+    assert stats["effective_shared_blocks"] == 16
     assert_pim_latency_split_identity(stats)
     assert stats["pim_service_latency"] == 2 * stats["pim_completion_latency_cycles"]
 
 
-def test_shared_mpu_serial_all_rank_banks_share_one_mpu_serializes_cross_bankgroup():
-    dut = make_dut(pim_blocks_per_bank=1, pim_banks_per_mpu=16)
+def test_shared_block_serial_all_rank_banks_share_one_block_serializes_cross_bankgroup():
+    dut = make_dut(pim_blocks_per_bank=1, pim_banks_per_block=16)
     first_bank = dut.addr_vec(Rank=0, BankGroup=0, Bank=0, Row=9, Column=0)
     last_bank = dut.addr_vec(Rank=0, BankGroup=3, Bank=3, Row=9, Column=0)
 
@@ -551,16 +551,16 @@ def test_shared_mpu_serial_all_rank_banks_share_one_mpu_serializes_cross_bankgro
     dut.assert_gap(0, 1, dut.timings["nPIM_MAC_LAT"] + 1, history=pim_cmds)
     assert stats["num_pim_reqs_served"] == 2
     assert stats["pim_dependency_stalls"] == 0
-    assert stats["pim_mpu_group_stalls"] > 0
+    assert stats["pim_shared_block_stalls"] > 0
     assert stats["pim_capacity_stalls"] == 0
     assert stats["pim_inflight_peak"] == 1
-    assert stats["pim_banks_per_mpu"] == 16
-    assert stats["pim_mpu_group_count"] == 1
-    assert stats["effective_mpu_groups"] == 1
+    assert stats["pim_banks_per_block"] == 16
+    assert stats["pim_shared_block_count"] == 1
+    assert stats["effective_shared_blocks"] == 1
 
 
-def test_shared_mpu_serial_four_bank_grouping_aligns_with_bankgroup_boundary():
-    dut = make_dut(pim_blocks_per_bank=1, pim_banks_per_mpu=4)
+def test_shared_block_serial_four_bank_grouping_aligns_with_bankgroup_boundary():
+    dut = make_dut(pim_blocks_per_bank=1, pim_banks_per_block=4)
     bank0 = dut.addr_vec(Rank=0, BankGroup=0, Bank=0, Row=9, Column=0)
     next_bankgroup_bank0 = dut.addr_vec(Rank=0, BankGroup=1, Bank=0, Row=9, Column=0)
 
@@ -580,13 +580,13 @@ def test_shared_mpu_serial_four_bank_grouping_aligns_with_bankgroup_boundary():
     assert stats["pim_dependency_stalls"] == 0
     assert stats["pim_capacity_stalls"] == 0
     assert stats["pim_inflight_peak"] == 1
-    assert stats["pim_banks_per_mpu"] == 4
-    assert stats["pim_mpu_group_count"] == 4
+    assert stats["pim_banks_per_block"] == 4
+    assert stats["pim_shared_block_count"] == 4
     assert stats["pim_simultaneous_active_banks_peak"] == 2
 
 
-def test_shared_mpu_serial_groups_do_not_cross_rank_boundary():
-    dut = make_dut(rank=2, pim_blocks_per_bank=1, pim_banks_per_mpu=4)
+def test_shared_block_serial_groups_do_not_cross_rank_boundary():
+    dut = make_dut(rank=2, pim_blocks_per_bank=1, pim_banks_per_block=4)
     rank0_bank0 = dut.addr_vec(Rank=0, BankGroup=0, Bank=0, Row=9, Column=0)
     rank1_bank0 = dut.addr_vec(Rank=1, BankGroup=0, Bank=0, Row=9, Column=0)
 
@@ -606,13 +606,13 @@ def test_shared_mpu_serial_groups_do_not_cross_rank_boundary():
     assert stats["pim_dependency_stalls"] == 0
     assert stats["pim_capacity_stalls"] == 0
     assert stats["pim_inflight_peak"] == 1
-    assert stats["pim_banks_per_mpu"] == 4
-    assert stats["pim_mpu_group_count"] == 8
+    assert stats["pim_banks_per_block"] == 4
+    assert stats["pim_shared_block_count"] == 8
     assert stats["pim_simultaneous_active_banks_peak"] == 2
 
 
-def test_experimental_same_mpu_paired_banks_can_overlap_when_slots_permit():
-    dut = make_experimental_dut(pim_blocks_per_bank=1, pim_banks_per_mpu=2)
+def test_experimental_same_shared_block_paired_banks_can_overlap_when_slots_permit():
+    dut = make_experimental_dut(pim_blocks_per_bank=1, pim_banks_per_block=2)
     bank0 = dut.addr_vec(Rank=0, BankGroup=0, Bank=0, Row=9, Column=0)
     bank1 = dut.addr_vec(Rank=0, BankGroup=0, Bank=1, Row=9, Column=0)
 
@@ -733,7 +733,7 @@ def test_all_bank_load_then_execute_requires_mode_and_load_ordering():
     assert_pim_latency_split_identity(stats)
     assert stats["pim_service_latency"] == stats["pim_ab_completion_latency_cycles"]
     assert stats["pim_ab_completion_latency_cycles"] == (
-        stats["pim_completion_latency_cycles"] * stats["pim_banks_per_mpu"]
+        stats["pim_completion_latency_cycles"] * stats["pim_banks_per_block"]
     )
     assert stats["pim_launch_wait"] > 0
 

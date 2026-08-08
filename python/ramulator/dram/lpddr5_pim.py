@@ -1,6 +1,7 @@
+import warnings
+
 from ramulator.dram.lpddr5 import LPDDR5
 from ramulator.dram.spec import TimingConstraint
-
 
 ResourceValue = int | float
 
@@ -73,9 +74,10 @@ PIM_DATATYPE_METADATA: dict[str, dict[str, ResourceValue]] = {
 
 
 PIM_MAC_EXECUTION_MODELS = {
-    "shared_mpu_serial",
+    "shared_block_serial",
     "subbank_overlap_experimental",
 }
+_DEFAULT_PIM_BANKS_PER_BLOCK = object()
 
 # Literature-anchored energy defaults:
 #   compute:   int8=0.35 pJ/MAC (CD-PIM, LPDDR5-PIM-native)
@@ -115,7 +117,7 @@ class LPDDR5PIM(LPDDR5):
 
     ``nPIM_MAC_II`` constrains command launch spacing. Request completion is
     modeled separately by the controller as pipeline + movement + writeback
-    residency, subject to bank slots and optional shared-MPU serialization.
+    residency, subject to bank slots and optional shared-block serialization.
     """
 
     name = "LPDDR5PIM"
@@ -263,8 +265,8 @@ class LPDDR5PIM(LPDDR5):
         timing_preset,
         power=None,
         pim_blocks_per_bank=1,
-        pim_banks_per_mpu=2,
-        pim_mac_execution_model="shared_mpu_serial",
+        pim_banks_per_block=_DEFAULT_PIM_BANKS_PER_BLOCK,
+        pim_mac_execution_model="shared_block_serial",
         pim_datatype="int8",
         pim_datatype_class=None,
         pim_datatype_behavior_enabled=False,
@@ -291,6 +293,22 @@ class LPDDR5PIM(LPDDR5):
         pim_incremental_energy_scale=None,
         **overrides,
     ):
+        legacy_banks_per_block = overrides.pop("pim_banks_per_mpu", None)
+        canonical_banks_per_block_supplied = pim_banks_per_block is not _DEFAULT_PIM_BANKS_PER_BLOCK
+        if not canonical_banks_per_block_supplied:
+            pim_banks_per_block = 2
+        if legacy_banks_per_block is not None:
+            warnings.warn(
+                "pim_banks_per_mpu is deprecated; use pim_banks_per_block",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            if canonical_banks_per_block_supplied and pim_banks_per_block != legacy_banks_per_block:
+                raise ValueError(
+                    "LPDDR5PIM legacy pim_banks_per_mpu conflicts with pim_banks_per_block"
+                )
+            pim_banks_per_block = legacy_banks_per_block
+
         pim_datatype = str(pim_datatype).lower()
         if pim_datatype not in PIM_DATATYPE_METADATA:
             supported = ", ".join(sorted(PIM_DATATYPE_METADATA))
@@ -321,6 +339,13 @@ class LPDDR5PIM(LPDDR5):
             )
 
         pim_mac_execution_model = str(pim_mac_execution_model)
+        if pim_mac_execution_model == "shared_mpu_serial":
+            warnings.warn(
+                "shared_mpu_serial is deprecated; use shared_block_serial",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            pim_mac_execution_model = "shared_block_serial"
         if pim_mac_execution_model not in PIM_MAC_EXECUTION_MODELS:
             supported = ", ".join(sorted(PIM_MAC_EXECUTION_MODELS))
             raise ValueError(
@@ -395,8 +420,8 @@ class LPDDR5PIM(LPDDR5):
 
         if not isinstance(pim_blocks_per_bank, int) or isinstance(pim_blocks_per_bank, bool):
             raise ValueError("LPDDR5PIM pim_blocks_per_bank must be an integer")
-        if not isinstance(pim_banks_per_mpu, int) or isinstance(pim_banks_per_mpu, bool):
-            raise ValueError("LPDDR5PIM pim_banks_per_mpu must be an integer")
+        if not isinstance(pim_banks_per_block, int) or isinstance(pim_banks_per_block, bool):
+            raise ValueError("LPDDR5PIM pim_banks_per_block must be an integer")
         if pim_blocks_per_bank <= 0:
             raise ValueError("LPDDR5PIM pim_blocks_per_bank must be positive")
         if resource["pim_datatype_bits"] <= 0:
@@ -429,14 +454,14 @@ class LPDDR5PIM(LPDDR5):
             raise ValueError("LPDDR5PIM pim_writeback_cycles must be non-negative")
         if resource["pim_slots_per_request"] <= 0:
             raise ValueError("LPDDR5PIM pim_slots_per_request must be positive")
-        if pim_banks_per_mpu <= 0:
-            raise ValueError("LPDDR5PIM pim_banks_per_mpu must be positive")
+        if pim_banks_per_block <= 0:
+            raise ValueError("LPDDR5PIM pim_banks_per_block must be positive")
         for energy_field in PIM_EVENT_ENERGY_FIELDS:
             if resource[energy_field] < 0:
                 raise ValueError(f"LPDDR5PIM {energy_field} must be non-negative")
 
         self.pim_blocks_per_bank = pim_blocks_per_bank
-        self.pim_banks_per_mpu = pim_banks_per_mpu
+        self.pim_banks_per_block = pim_banks_per_block
         self.pim_mac_execution_model = pim_mac_execution_model
         self.pim_datatype = pim_datatype
         self.pim_datatype_class = pim_datatype_class
@@ -461,15 +486,15 @@ class LPDDR5PIM(LPDDR5):
             if level_name in {"Row", "Column"}:
                 continue
             banks_per_rank *= int(org_dict[level_name.lower()])
-        if self.pim_banks_per_mpu > banks_per_rank:
+        if self.pim_banks_per_block > banks_per_rank:
             raise ValueError(
-                f"LPDDR5PIM pim_banks_per_mpu ({self.pim_banks_per_mpu}) exceeds "
+                f"LPDDR5PIM pim_banks_per_block ({self.pim_banks_per_block}) exceeds "
                 f"banks per rank ({banks_per_rank})"
             )
-        if banks_per_rank % self.pim_banks_per_mpu != 0:
+        if banks_per_rank % self.pim_banks_per_block != 0:
             raise ValueError(
                 f"LPDDR5PIM banks per rank ({banks_per_rank}) must be divisible by "
-                f"pim_banks_per_mpu ({self.pim_banks_per_mpu})"
+                f"pim_banks_per_block ({self.pim_banks_per_block})"
             )
         if self.pim_datatype_behavior_enabled and self.pim_blocks_per_bank < int(
             self.pim_datatype_resource["pim_slots_per_request"]
@@ -507,7 +532,7 @@ class LPDDR5PIM(LPDDR5):
             pim_slots_per_request = 1
 
         cfg["pim_blocks_per_bank"] = self.pim_blocks_per_bank
-        cfg["pim_banks_per_mpu"] = self.pim_banks_per_mpu
+        cfg["pim_banks_per_block"] = self.pim_banks_per_block
         cfg["pim_mac_execution_model"] = self.pim_mac_execution_model
         cfg["pim_datatype"] = self.pim_datatype
         cfg["pim_datatype_class"] = self.pim_datatype_class

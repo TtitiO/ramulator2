@@ -14,7 +14,9 @@ from ramulator.pimscope.backend import (
     hardware_config_from_manifest,
     replay_concrete_trace,
 )
+from ramulator.pimscope.compat import canonicalize_legacy_result
 from ramulator.pimscope.config import ResolvedExperiment
+from ramulator.pimscope.schema import RESULT_SCHEMA_NAME, RESULT_SCHEMA_VERSION
 
 RAMULATOR_ROOT = Path(__file__).resolve().parents[3]
 
@@ -190,8 +192,9 @@ def run_experiment(
     if provenance:
         provenance_payload.update(dict(provenance))
 
-    return {
-        "schema_version": 1,
+    return canonicalize_legacy_result({
+        "schema_version": RESULT_SCHEMA_VERSION,
+        "schema_name": RESULT_SCHEMA_NAME,
         "experiment": manifest["experiment"],
         "status": "PASS" if replay["replay_ok"] else "FAIL",
         "manifest_fingerprint": resolved.fingerprint,
@@ -226,4 +229,4 @@ def run_experiment(
         },
         "simulation": replay,
         "provenance": provenance_payload,
-    }
+    })

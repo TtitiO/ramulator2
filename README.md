@@ -432,8 +432,8 @@ dram = ramulator.dram.LPDDR5PIM(
     org_preset="LPDDR5_8Gb_x16",
     timing_preset="LPDDR5_6400",
     pim_blocks_per_bank=1,
-    pim_banks_per_mpu=2,
-    pim_mac_execution_model="shared_mpu_serial",
+    pim_banks_per_block=2,
+    pim_mac_execution_model="shared_block_serial",
     pim_datatype="int8",
 )
 ```
@@ -443,13 +443,13 @@ The timing/resource contract is:
 - `nPIM_MAC_II` controls the earliest legal spacing between `PIM_MAC` command launches.
 - A per-bank `PIM_MAC` completes after `pim_mac_pipeline_latency_cycles + pim_movement_cycles + pim_writeback_cycles` controller cycles. Command issue and request completion are distinct events.
 - `pim_blocks_per_bank` is the bank-local execution-slot capacity; each request occupies `pim_slots_per_request` slots until completion.
-- `shared_mpu_serial` permits only one in-flight per-bank MAC in each group of `pim_banks_per_mpu` banks. `subbank_overlap_experimental` removes that shared-MPU serialization but retains timing, dependency, and slot constraints.
-- `PIM_MAC_AB` represents one rank-scoped all-bank MAC. Its modeled completion latency is the per-bank completion latency multiplied by `pim_banks_per_mpu`, reflecting serial sharing inside each MPU group while groups operate in parallel.
+- `shared_block_serial` permits only one in-flight per-bank MAC in each group of `pim_banks_per_block` banks. `subbank_overlap_experimental` removes that shared-block serialization but retains timing, dependency, and slot constraints.
+- `PIM_MAC_AB` represents one rank-scoped all-bank MAC. Its modeled completion latency is the per-bank completion latency multiplied by `pim_banks_per_block`, reflecting serial sharing inside each shared PIM block while blocks operate in parallel.
 - `PIM_BCAST` is a bounded all-bank setup/load abstraction. The required mode sequence is `HAB -> PIM_BCAST -> HAB_PIM -> PIM_MAC_AB`; `SB` returns to host single-bank mode. Host reads/writes do not issue while the rank is in an all-bank mode.
 - Refresh and closing commands wait for affected in-flight PIM work. `AllBank` refresh uses rank scope for `LPDDR5PIM`.
 - Datatype behavior is opt-in. `int8` and `fp16` have source-backed timing/resource profiles; `int16` and `bf16` remain metadata/energy what-if labels unless explicit support is added. Unknown datatype names and inconsistent SIMD/lane settings are rejected.
 
-The controller exposes separate issue, completion, stall, slot-capacity, shared-MPU, and latency statistics so analyses do not conflate a command launch with completed work.
+The controller exposes separate issue, completion, stall, slot-capacity, shared-block, and latency statistics so analyses do not conflate a command launch with completed work.
 
 The checked-in Python tests cover the upstream validation infrastructure and the
 LPDDR5-PIM extension. The optional native harness binding is disabled by
