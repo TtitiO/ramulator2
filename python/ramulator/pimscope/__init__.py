@@ -21,6 +21,11 @@ from ramulator.pimscope.backend import (
     replay_concrete_trace,
     time_unit_ns,
 )
+from ramulator.pimscope.capabilities import (
+    PIM_BACKEND_CAPABILITIES,
+    pim_backend_capabilities,
+    require_supported_pim_backend,
+)
 from ramulator.pimscope.compat import canonicalize_legacy_pim_config, canonicalize_legacy_result
 from ramulator.pimscope.config import (
     MANIFEST_SCHEMA_VERSION,
@@ -48,6 +53,9 @@ from ramulator.pimscope.schema import (
 
 __all__ = [
     "MANIFEST_SCHEMA_VERSION",
+    "PIM_BACKEND_CAPABILITIES",
+    "pim_backend_capabilities",
+    "require_supported_pim_backend",
     "canonicalize_legacy_pim_config",
     "canonicalize_legacy_result",
     "AGGREGATE_SCHEMA_NAMES",

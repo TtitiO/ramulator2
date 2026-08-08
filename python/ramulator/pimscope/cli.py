@@ -10,6 +10,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from ramulator.pimscope.capabilities import pim_backend_capabilities
 from ramulator.pimscope.config import (
     apply_overrides,
     load_raw_manifest,
@@ -109,6 +110,12 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
         }
 
     checks.append(_doctor_check("lpddr5-pim-component", component_check))
+    checks.append(
+        _doctor_check(
+            "pim-backend-capabilities",
+            lambda: {"backends": pim_backend_capabilities()},
+        )
+    )
 
     if args.config is not None:
         checks.append(

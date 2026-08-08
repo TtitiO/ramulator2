@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from ramulator.pimscope.capabilities import require_supported_pim_backend
 from ramulator.pimscope.compat import canonicalize_legacy_pim_config
 
 MANIFEST_SCHEMA_VERSION = 1
@@ -257,10 +258,7 @@ def _resolve_hardware(raw: Any) -> dict[str, Any]:
             "unsupported by the public runner; only one channel is currently validated",
         )
 
-    if hardware["dram_class"] != "LPDDR5PIM":
-        _fail(
-            "hardware.dram_class", "the public experiment runner currently supports only LPDDR5PIM"
-        )
+    require_supported_pim_backend(hardware["dram_class"])
     for field in ("org_preset", "timing_preset"):
         if not isinstance(hardware[field], str) or not hardware[field]:
             _fail(f"hardware.{field}", "must be a non-empty string")

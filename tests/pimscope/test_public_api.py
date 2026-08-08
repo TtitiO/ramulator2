@@ -2,11 +2,13 @@ import json
 import os
 from pathlib import Path
 
+import pytest
 from ramulator.pimscope import (
     create_dram,
     create_memory_system,
     hardware_config_from_manifest,
     load_experiment_manifest,
+    pim_backend_capabilities,
     resolve_experiment_manifest,
     run_experiment,
     validate_backend,
@@ -21,11 +23,21 @@ def _manifest():
     )
 
 
+def test_lpddr6_capability_is_declared_but_not_advertised_as_pim():
+    capabilities = pim_backend_capabilities()
+    assert capabilities["LPDDR5PIM"]["status"] == "supported"
+    assert capabilities["LPDDR6PIM"]["status"] == "planned"
+    assert capabilities["LPDDR6PIM"]["available_base_dram_model"]
+
+    raw = _manifest()
+    raw["hardware"]["dram_class"] = "LPDDR6"
+    with pytest.raises(ValueError, match=r"generic LPDDR6.*LPDDR6-PIM is not implemented"):
+        resolve_experiment_manifest(raw, source="test")
+
+
 def test_unsupported_topology_is_rejected_by_public_manifest():
     raw = _manifest()
     raw["hardware"]["topology"] = {"controllers": 1, "channels": 2}
-    import pytest
-
     with pytest.raises(ValueError, match=r"hardware\.topology\.channels.*unsupported"):
         resolve_experiment_manifest(raw, source="test")
 
