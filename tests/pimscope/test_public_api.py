@@ -47,6 +47,8 @@ def test_public_experiment_api_replays_example():
     assert result["simulation"]["replay_ok"]
     assert result["simulation"]["cycles"] == 5981
     assert result["provenance"]["config_source"] == "pimscope_custom_model.json"
+    assert result["provenance"]["seed"] == 12345
+    assert result["workload_summary"]["seed"] == 12345
 
 
 def test_public_api_does_not_mutate_global_expanded_record_limit(monkeypatch):

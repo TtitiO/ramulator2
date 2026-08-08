@@ -16,6 +16,7 @@ DEFAULT_CFG = {
     "dram_kwargs": {"pim_datatype": "int8"},
     "frontend_clock_ratio": 4,
     "stream_cls": 8,
+    "seed": 12345,
 }
 
 COMMANDS_TO_COUNT = [
@@ -159,6 +160,7 @@ def run_single(
     num_probes: int = 100,
     warmup: int = 100,
     read_ratio: int = 100,
+    seed: int | None = None,
     observability_dir: Path | None = None,
 ) -> dict:
     """Run one host-traffic LPDDR5-PIM smoke point.
@@ -170,6 +172,9 @@ def run_single(
     import ramulator
 
     cfg = _merge_cfg(DEFAULT_CFG, cfg_override)
+    resolved_seed = int(cfg["seed"] if seed is None else seed)
+    if resolved_seed < 0:
+        raise ValueError("seed must be a non-negative integer")
     dram = dram if dram is not None else _make_dram(ramulator, cfg)
     layout = _extract_dram_layout(dram)
     frontend = ramulator.frontend.LatencyThroughputTrace(
@@ -178,7 +183,7 @@ def run_single(
         num_probe_requests=int(num_probes),
         latency_sample_count=int(num_probes),
         warmup_cycles=int(warmup),
-        seed=12345,
+        seed=resolved_seed,
         read_ratio=int(read_ratio),
         stream_cls=int(cfg.get("stream_cls", 8)),
         **layout,
@@ -193,4 +198,5 @@ def run_single(
         stats.setdefault("evidence", {})["pim_energy_observability"] = _collect_observability(
             stats, tmpdir, cfg
         )
+        stats["evidence"]["seed"] = resolved_seed
         return stats

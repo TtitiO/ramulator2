@@ -26,6 +26,7 @@
     "past_len": 16,
     "weight_residency": "resident",
     "mac_mode": "per_kind",
+    "seed": 12345,
     "max_inflight_requests": 16,
     "interleave_depth": 4
   },

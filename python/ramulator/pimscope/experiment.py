@@ -183,6 +183,7 @@ def run_experiment(
     )
     provenance_payload: dict[str, Any] = {
         "generated_at": datetime.now(UTC).isoformat(),
+        "seed": workload["seed"],
         "ramulator2_commit": _git_revision(RAMULATOR_ROOT),
         # Keep provenance portable when the manifest came from an absolute path.
         "config_source": Path(resolved.source).name
@@ -214,6 +215,7 @@ def run_experiment(
             "effective_max_inflight_requests": effective_inflight,
         },
         "workload_summary": {
+            "seed": workload["seed"],
             "model": model_name,
             "phase": workload["phase"],
             "semantic_records": len(semantic),

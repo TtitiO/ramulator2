@@ -50,6 +50,7 @@ DEFAULT_WORKLOAD = {
     "schedule_policy": "serialized",
     "weight_residency": "resident",
     "mac_mode": "per_kind",
+    "seed": 12345,
     "max_inflight_requests": 16,
     "interleave_depth": 4,
 }
@@ -172,6 +173,12 @@ def _reject_unknown(mapping: dict[str, Any], allowed: set[str], path: str) -> No
 def _positive_int(value: Any, path: str) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
         _fail(path, f"must be a positive integer, got {value!r}")
+    return value
+
+
+def _nonnegative_int(value: Any, path: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        _fail(path, f"must be a non-negative integer, got {value!r}")
     return value
 
 
@@ -366,6 +373,7 @@ def _resolve_workload(raw: Any) -> dict[str, Any]:
     )
     _positive_int(workload["past_len"], "workload.past_len")
     _positive_int(workload["prompt_len"], "workload.prompt_len")
+    _nonnegative_int(workload["seed"], "workload.seed")
     _positive_int(workload["max_inflight_requests"], "workload.max_inflight_requests")
     _positive_int(workload["interleave_depth"], "workload.interleave_depth")
     if workload["phase"] == "prefill" and workload["schedule_policy"] != "serialized":
