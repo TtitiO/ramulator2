@@ -30,6 +30,7 @@ sweep_log.txt
 
 *.out
 *.json
+!examples/pimscope_custom_model.json
 
 # Visualizer
 *.ram2bin

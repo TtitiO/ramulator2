@@ -262,11 +262,17 @@ def validate_record(record: dict, *, address_layout: Mapping[str, Any] | None = 
 
 
 
-def validate_sequence(records: list[dict], *, address_layout: Mapping[str, Any] | None = None) -> None:
+def validate_sequence(
+    records: list[dict],
+    *,
+    address_layout: Mapping[str, Any] | None = None,
+    max_expanded_records: int | None = None,
+) -> None:
     mode = "SB"
     saw_bcast_since_hab = False
     expanded_records = 0
-    max_expanded_records = int(os.environ.get(MAX_EXPANDED_RECORDS_ENV, MAX_EXPANDED_RECORDS))
+    if max_expanded_records is None:
+        max_expanded_records = int(os.environ.get(MAX_EXPANDED_RECORDS_ENV, MAX_EXPANDED_RECORDS))
     if max_expanded_records <= 0:
         raise ValueError(f"{MAX_EXPANDED_RECORDS_ENV} must be positive when set")
     for index, record in enumerate(records):
@@ -331,10 +337,15 @@ def write_jsonl(
     output_path: Path,
     *,
     address_layout: Mapping[str, Any] | None = None,
+    max_expanded_records: int | None = None,
 ) -> None:
     header = build_header()
     slim_records = [slim_record(record) for record in records]
-    validate_sequence(slim_records, address_layout=address_layout)
+    validate_sequence(
+        slim_records,
+        address_layout=address_layout,
+        max_expanded_records=max_expanded_records,
+    )
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with output_path.open("w", encoding="utf-8") as handle:
         handle.write(stable_json_dumps(header) + "\n")

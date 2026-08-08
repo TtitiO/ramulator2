@@ -54,7 +54,10 @@ If you use Ramulator 2.1/2.0 in your work, please use the following citations:
 - `src/`
   C++ code for main simulator implementation.
 - `python/`
-  Python wrappers for easy and scriptable configuration of Ramulator.
+  Python wrappers for easy and scriptable configuration of Ramulator. The
+  maintained PIMScope fork also provides the documented `ramulator.pimscope`
+  API for validated LPDDR5-PIM manifests, component construction, workload
+  lowering, concrete-trace replay, and structured experiment results.
 - `examples/`
   Ready-to-run example configurations and traces.
 - `tests/`
@@ -75,7 +78,7 @@ docker compose exec ramulator2 bash
 ```
 Doing so creates a container with all the dependencies, mounts the Ramulator 2.1 repository at `/workspace`, and automatically activates `ramulator2-venv` in the container bash.
 
-If you need to configure your own environment, please refer to Section 2.3 for detailed instructions. 
+If you need to configure your own environment, please refer to Section 2.4 for detailed instructions.
 
 ### 2.2 Getting Started
 
@@ -103,7 +106,41 @@ python3 examples/example_config.py
 
 You should see some example statistics being printed. You can head to Section 3 directly for detailed explanations and instructions on how to use and configure Ramulator 2.1 if you do not need to build Ramulator 2.1 in your custom environment.
 
-### 2.3 Build Requirements
+### 2.3 Public LPDDR5-PIM experiment API
+
+After installing the Python package and building the runtime extension, custom
+LPDDR5-PIM experiments can use the simulator-owned API directly:
+
+```python
+from ramulator.pimscope import load_experiment_manifest, run_experiment
+
+manifest = load_experiment_manifest("examples/pimscope_custom_model.json")
+result = run_experiment(manifest)
+print(result["simulation"]["cycles"])
+```
+
+The fork also installs a standalone command and ships a runnable example:
+
+```bash
+ramulator-pimscope validate examples/pimscope_custom_model.json
+ramulator-pimscope run examples/pimscope_custom_model.json \
+  --output /tmp/pimscope-result.json
+python examples/pimscope_experiment.py
+```
+
+The `ramulator.pimscope` package owns reusable manifest validation, resolved
+organization/address-layout inspection, Ramulator component construction,
+semantic workload-surrogate lowering, concrete trace validation/replay, and
+structured result extraction. Paper-specific model matrices, aggregation,
+figures, and release checks remain in the parent PIMScope repository. New
+simulator functionality should be implemented in this package or in the
+underlying Ramulator component packages, not in a paper script.
+
+The parent repository's `pimscope` command is a thin file/argument adapter over
+this API. The old `scripts.lib.*` imports are compatibility shims for one
+migration release and are deprecated.
+
+### 2.4 Build Requirements
 
 **Required:**
 
@@ -147,7 +184,7 @@ make -j
 cd ..
 ```
 
-### 2.4 Installing the Python Package
+### 2.5 Installing the Python Package
 
 After building, install the Python package in editable mode so that `python -m ramulator` and `import ramulator` work from any directory:
 
@@ -383,9 +420,10 @@ Use the controller that matches the standard you want to model. DDR3, DDR4, DDR5
 #### LPDDR5-PIM execution semantics
 
 This fork extends the upstream Ramulator 2.1 model with LPDDR5-PIM support.
-The PIMScope parent repository provides workload-generation and artifact scripts;
-this submodule owns the DRAM, controller, frontend, code-generation, and
-validation implementation.
+This repository owns the DRAM, controller, frontend, code-generation,
+validation, workload-surrogate generation/lowering, and reusable experiment
+API. The PIMScope parent repository retains paper-specific experiment matrices,
+artifact aggregation, plotting, and release checks.
 
 PIMScope's `LPDDR5PIM` extension is an explicit simulator abstraction rather than a claim that every added opcode is a literal public LPDDR5 command. Pair `ramulator.dram.LPDDR5PIM` with `ramulator.controller.LPDDR5PIM`.
 

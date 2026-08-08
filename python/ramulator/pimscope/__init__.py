@@ -1,0 +1,61 @@
+"""Public PIMScope experiment API built on Ramulator 2.1.
+
+This package contains reusable manifest validation, hardware construction,
+concrete-trace replay, and workload-surrogate experiment execution.  Paper
+matrices, aggregation, plotting, and release checks remain in the parent
+PIMScope repository.
+"""
+
+from ramulator.pimscope.backend import (
+    count_concrete_opcodes,
+    create_address_mapper,
+    create_concrete_frontend,
+    create_dram,
+    create_memory_system,
+    generate_and_replay,
+    hardware_config_from_manifest,
+    infer_model_family,
+    pim_cfg_per_bank,
+    pim_cfg_shared,
+    prefill_formula,
+    replay_concrete_trace,
+    time_unit_ns,
+)
+from ramulator.pimscope.config import (
+    MANIFEST_SCHEMA_VERSION,
+    ResolvedExperiment,
+    apply_overrides,
+    load_experiment_manifest,
+    load_raw_manifest,
+    resolve_experiment_manifest,
+)
+from ramulator.pimscope.experiment import (
+    retarget_semantic_banks,
+    run_experiment,
+    validate_backend,
+)
+
+__all__ = [
+    "MANIFEST_SCHEMA_VERSION",
+    "ResolvedExperiment",
+    "apply_overrides",
+    "load_experiment_manifest",
+    "load_raw_manifest",
+    "resolve_experiment_manifest",
+    "validate_backend",
+    "retarget_semantic_banks",
+    "run_experiment",
+    "count_concrete_opcodes",
+    "create_address_mapper",
+    "create_concrete_frontend",
+    "create_dram",
+    "create_memory_system",
+    "generate_and_replay",
+    "hardware_config_from_manifest",
+    "infer_model_family",
+    "pim_cfg_per_bank",
+    "pim_cfg_shared",
+    "prefill_formula",
+    "replay_concrete_trace",
+    "time_unit_ns",
+]

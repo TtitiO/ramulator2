@@ -1,0 +1,35 @@
+{
+  "schema_version": 1,
+  "experiment": "ramulator-pimscope-api-example",
+  "hardware": {
+    "pim": {
+      "pim_datatype": "int8",
+      "pim_banks_per_mpu": 2,
+      "pim_mac_execution_model": "shared_mpu_serial"
+    }
+  },
+  "workload": {
+    "model": {
+      "name": "TinyResearchModel",
+      "num_layers": 2,
+      "hidden_size": 64,
+      "num_heads": 4,
+      "num_kv_heads": 2,
+      "head_dim": 16,
+      "ffn_hidden_size": 128,
+      "ffn_variant": "swiglu_3proj",
+      "activation": "silu",
+      "citation": "Simulator API demonstrator; not a published architecture"
+    },
+    "datatype": "int8",
+    "phase": "decode",
+    "past_len": 16,
+    "weight_residency": "resident",
+    "mac_mode": "per_kind",
+    "max_inflight_requests": 16,
+    "interleave_depth": 4
+  },
+  "output": {
+    "path": "pimscope_custom_model_result.json"
+  }
+}

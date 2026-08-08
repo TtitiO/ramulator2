@@ -360,6 +360,7 @@ def lower_semantic_records_to_concrete(
     mac_mode: str = "per_kind",
     address_layout: dict | None = None,
     synthetic_address_policy: str = "strict_bytes",
+    max_expanded_records: int | None = None,
 ) -> list[dict]:
     """Lower Phase 2 semantic records into native LPDDR5-PIM concrete opcodes.
 
@@ -734,7 +735,11 @@ def lower_semantic_records_to_concrete(
                 mode = "SB"
                 all_bank_load_ready = False
 
-    validate_sequence(records, address_layout=address_layout)
+    validate_sequence(
+        records,
+        address_layout=address_layout,
+        max_expanded_records=max_expanded_records,
+    )
     return records
 
 
