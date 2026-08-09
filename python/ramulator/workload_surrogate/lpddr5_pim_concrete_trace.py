@@ -1,8 +1,9 @@
-"""Native LPDDR5-PIM concrete opcode trace helpers.
+"""Native LPDDR PIM concrete opcode trace helpers.
 
-This module is intentionally separate from ``structured_trace.py``.  The
+This module is intentionally separate from ``structured_trace.py``. The
 structured trace surface preserves semantic workload-surrogate records, while
-this surface is backend-specific command replay for LPDDR5-PIM validation.
+this surface is backend-specific command replay for LPDDR5PIM and LPDDR6PIM
+validation.
 """
 
 from __future__ import annotations
@@ -15,8 +16,12 @@ from typing import Any, Mapping
 from ramulator.dram.addressing import addr_vec_from_byte_address as _map_byte_address
 from ramulator.dram.addressing import validate_addr_vec
 
-CONCRETE_SCHEMA_VERSION = "lpddr5-pim-opcode-v0.2"
-CONCRETE_GENERATOR_VERSION = "lpddr5-pim-opcode-generator-v0.1"
+CONCRETE_SCHEMA_VERSIONS = {
+    "LPDDR5PIM": "lpddr5-pim-opcode-v0.2",
+    "LPDDR6PIM": "lpddr6-pim-opcode-v0.1",
+}
+CONCRETE_SCHEMA_VERSION = CONCRETE_SCHEMA_VERSIONS["LPDDR5PIM"]
+CONCRETE_GENERATOR_VERSION = "lpddr-pim-opcode-generator-v0.2"
 CONCRETE_OPCODES = {"READ", "WRITE", "SB", "HAB", "HAB_PIM", "PIM_BCAST", "PIM_MAC", "PIM_MAC_AB"}
 MODE_OPCODES = {"SB", "HAB", "HAB_PIM"}
 REQUEST_OPCODES = {"READ", "WRITE", "PIM_BCAST", "PIM_MAC", "PIM_MAC_AB"}
@@ -33,7 +38,7 @@ FORBIDDEN_RAW_ATTACC_OPCODES = {
     "PIM_ACT_AB",
 }
 REQUIRED_BOUNDARY_CLAIMS = [
-    "native-lpddr5-pim-concrete-opcode-replay",
+    "native-lpddr-pim-concrete-opcode-replay",
     "backend-specific-command-validation",
     "simulator-diagnostic",
     "non-silicon-calibrated",
@@ -80,7 +85,7 @@ def addr_vec_from_byte_address(
 def concrete_provenance(
     *,
     source_kind: str = "generated",
-    manifest_name: str = "lpddr5_pim_concrete_minimal",
+    manifest_name: str = "lpddr_pim_concrete_minimal",
 ) -> dict:
     return {
         "source_kind": source_kind,
@@ -89,25 +94,39 @@ def concrete_provenance(
         "claim_boundary": list(REQUIRED_BOUNDARY_CLAIMS),
         "non_claims": list(DEFAULT_NON_CLAIMS),
         "notes": (
-            "backend-specific native LPDDR5-PIM opcode replay; PIM_BCAST is a bounded all-bank "
+            "backend-specific native LPDDR PIM opcode replay; PIM_BCAST is a bounded all-bank "
             "setup abstraction rather than a vendor-faithful payload-source or timing model; "
             "semantic JSONL remains separate"
         ),
     }
 
 
-def build_header() -> dict:
-    """Build the v0.2 trace header envelope (asserted once per file)."""
-    header = {"schema_version": CONCRETE_SCHEMA_VERSION}
-    validate_header(header)
+def build_header(*, dram_class: str = "LPDDR5PIM") -> dict:
+    """Build the backend-specific trace header envelope."""
+    if dram_class not in CONCRETE_SCHEMA_VERSIONS:
+        raise ValueError(f"Unsupported PIM trace backend: {dram_class}")
+    header = {
+        "schema_version": CONCRETE_SCHEMA_VERSIONS[dram_class],
+        "dram_class": dram_class,
+    }
+    validate_header(header, expected_dram_class=dram_class)
     return header
 
 
-def validate_header(header: dict) -> None:
-    if header.get("schema_version") != CONCRETE_SCHEMA_VERSION:
+def validate_header(header: dict, *, expected_dram_class: str | None = None) -> None:
+    dram_class = header.get("dram_class", "LPDDR5PIM")
+    if dram_class not in CONCRETE_SCHEMA_VERSIONS:
+        raise ValueError(f"Unsupported concrete opcode dram_class: {dram_class}")
+    if expected_dram_class is not None and dram_class != expected_dram_class:
+        raise ValueError(
+            f"Concrete opcode dram_class {dram_class!r} does not match "
+            f"expected backend {expected_dram_class!r}"
+        )
+    expected_schema = CONCRETE_SCHEMA_VERSIONS[dram_class]
+    if header.get("schema_version") != expected_schema:
         raise ValueError(
             "Unsupported concrete opcode schema_version: "
-            f"{header.get('schema_version')}"
+            f"{header.get('schema_version')}; expected {expected_schema} for {dram_class}"
         )
 
 
@@ -126,11 +145,11 @@ def validate_record(record: dict, *, address_layout: Mapping[str, Any] | None = 
     opcode = record["opcode"]
     if opcode in FORBIDDEN_RAW_ATTACC_OPCODES:
         raise ValueError(
-            "Raw AttAcc opcode is not part of the LPDDR5-PIM concrete schema: "
+            "Raw AttAcc opcode is not part of the LPDDR PIM concrete schema: "
             f"{opcode}"
         )
     if opcode not in CONCRETE_OPCODES:
-        raise ValueError(f"Unsupported LPDDR5-PIM concrete opcode: {opcode}")
+        raise ValueError(f"Unsupported LPDDR PIM concrete opcode: {opcode}")
     repeat = record["repeat"]
     if isinstance(repeat, bool) or not isinstance(repeat, int):
         raise ValueError("Concrete opcode repeat must be an integer")
@@ -395,8 +414,9 @@ def write_jsonl(
     *,
     address_layout: Mapping[str, Any] | None = None,
     max_expanded_records: int | None = None,
+    dram_class: str = "LPDDR5PIM",
 ) -> None:
-    header = build_header()
+    header = build_header(dram_class=dram_class)
     slim_records = [slim_record(record) for record in records]
     validate_sequence(
         slim_records,
@@ -415,6 +435,7 @@ def read_jsonl(
     *,
     address_layout: Mapping[str, Any] | None = None,
     max_expanded_records: int | None = None,
+    expected_dram_class: str | None = None,
 ) -> tuple[dict, list[dict]]:
     """Read a v0.2 trace: returns (validated header, validated slim records)."""
     lines = [
@@ -425,7 +446,7 @@ def read_jsonl(
     if not lines:
         raise ValueError("Concrete opcode trace is empty")
     header = json.loads(lines[0])
-    validate_header(header)
+    validate_header(header, expected_dram_class=expected_dram_class)
     records = [json.loads(line) for line in lines[1:]]
     validate_sequence(
         records,

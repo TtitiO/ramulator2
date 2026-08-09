@@ -111,7 +111,7 @@ if(RAMULATOR_PYTHON_BINDINGS)
     COMMAND ${CMAKE_COMMAND} -E env
       "PYTHONPATH=${CMAKE_CURRENT_SOURCE_DIR}/python"
       ${Python_EXECUTABLE} -m ramulator codegen
-      LPDDR5 LPDDR5PIM
+      LPDDR5 LPDDR5PIM LPDDR6 LPDDR6PIM
       --src-dir ${CMAKE_CURRENT_SOURCE_DIR}/src/ramulator
     WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
     COMMENT "Running ramulator codegen..."
@@ -122,6 +122,8 @@ if(RAMULATOR_PYTHON_BINDINGS)
         -i
         ${CMAKE_CURRENT_SOURCE_DIR}/src/ramulator/dram/impl/LPDDR5.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/ramulator/dram/impl/LPDDR5PIM.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/ramulator/dram/impl/LPDDR6.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/ramulator/dram/impl/LPDDR6PIM.cpp
       WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
       COMMENT "Formatting generated C++ files..."
     )

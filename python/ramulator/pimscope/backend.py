@@ -1,4 +1,4 @@
-"""Reusable LPDDR5-PIM construction, lowering, and replay APIs.
+"""Reusable LPDDR PIM construction, lowering, and replay APIs.
 
 Paper-specific experiment matrices and artifact aggregation remain in the
 parent PIMScope repository; this module owns simulator-facing operations.
@@ -11,6 +11,8 @@ from collections import Counter
 from pathlib import Path
 
 from ramulator.dram.addressing import concrete_address_layout, extract_dram_layout
+from ramulator.dram.lpddr5_pim import PIM_DATATYPE_RESOURCES as LPDDR5_PIM_DATATYPE_RESOURCES
+from ramulator.dram.lpddr6_pim import PIM_DATATYPE_RESOURCES as LPDDR6_PIM_DATATYPE_RESOURCES
 from ramulator.pimscope.config import ResolvedExperiment
 
 LPDDR5_PIM_CONFIG = {
@@ -41,7 +43,12 @@ def create_dram(cfg: dict | None = None, *, dram_kwargs_overrides: dict | None =
     dram_kwargs = dict(cfg.get("dram_kwargs", {}))
     if dram_kwargs_overrides:
         dram_kwargs.update(dram_kwargs_overrides)
-    return ramulator.dram.LPDDR5PIM(
+    dram_class = cfg.get("dram_class", "LPDDR5PIM")
+    try:
+        dram_type = getattr(ramulator.dram, dram_class)
+    except AttributeError as exc:
+        raise ValueError(f"Ramulator DRAM class {dram_class!r} is not available") from exc
+    return dram_type(
         org_preset=cfg["org_preset"],
         timing_preset=cfg["timing_preset"],
         **dram_kwargs,
@@ -118,7 +125,20 @@ def create_concrete_frontend(
         kwargs["max_trace_bytes"] = max_trace_bytes
     if max_expanded_records is not None:
         kwargs["max_expanded_records"] = max_expanded_records
-    return ramulator.frontend.LPDDR5PIMConcreteTrace(**kwargs)
+    frontend_name = {
+        "LPDDR5PIM": "LPDDR5PIMConcreteTrace",
+        "LPDDR6PIM": "LPDDR6PIMConcreteTrace",
+    }.get(type(dram).__name__)
+    if frontend_name is None:
+        raise ValueError(
+            f"No concrete PIM frontend is declared for DRAM {type(dram).__name__}"
+        )
+    if type(dram).__name__ == "LPDDR6PIM":
+        kwargs["expected_schema_version"] = "lpddr6-pim-opcode-v0.1"
+        kwargs["expected_dram_class"] = "LPDDR6PIM"
+    else:
+        kwargs["expected_dram_class"] = "LPDDR5PIM"
+    return getattr(ramulator.frontend, frontend_name)(**kwargs)
 
 
 def create_memory_system(dram, cfg: dict | None = None):
@@ -127,7 +147,13 @@ def create_memory_system(dram, cfg: dict | None = None):
     cfg = cfg or LPDDR5_PIM_CONFIG
     controller_cfg = cfg.get("controller", {})
     memory_cfg = cfg.get("memory_system", {})
-    ctrl = ramulator.controller.LPDDR5PIM(
+    controller_name = {
+        "LPDDR5PIM": "LPDDR5PIM",
+        "LPDDR6PIM": "LPDDR6PIM",
+    }.get(type(dram).__name__)
+    if controller_name is None:
+        raise ValueError(f"No PIM controller is declared for DRAM {type(dram).__name__}")
+    ctrl = getattr(ramulator.controller, controller_name)(
         dram=dram,
         scheduler=_component(ramulator.scheduler, controller_cfg.get("scheduler", "FRFCFS")),
         refresh_manager=_component(
@@ -172,6 +198,12 @@ def replay_concrete_trace(
     from ramulator.workload_surrogate.lpddr5_pim_concrete_trace import write_jsonl
 
     cfg = backend_cfg or LPDDR5_PIM_CONFIG
+    dram_class = cfg.get("dram_class", "LPDDR5PIM")
+    if dram_class not in {"LPDDR5PIM", "LPDDR6PIM"}:
+        raise ValueError(
+            "Concrete PIM replay frontend supports LPDDR5PIM and LPDDR6PIM only; "
+            f"got {dram_class}"
+        )
     dram = create_dram(cfg, dram_kwargs_overrides=pim_cfg_override)
     tck_ns = time_unit_ns(cfg)
     layout = extract_dram_layout(dram)
@@ -183,6 +215,7 @@ def replay_concrete_trace(
             trace_path,
             address_layout=layout,
             max_expanded_records=max_expanded_records,
+            dram_class=dram_class,
         )
         frontend = create_concrete_frontend(
             trace_path,
@@ -211,6 +244,12 @@ def replay_concrete_trace(
         return int(ctrl.get(key, 0) or 0)
 
     return {
+        "dram_class": type(dram).__name__,
+        "trace_schema": (
+            "lpddr6-pim-opcode-v0.1"
+            if type(dram).__name__ == "LPDDR6PIM"
+            else "lpddr5-pim-opcode-v0.2"
+        ),
         "cycles": cycles,
         "runtime_ns": cycles * tck_ns,
         "address_mapping_version": layout["mapping_version"],
@@ -373,8 +412,16 @@ def infer_model_family(name: str) -> str:
     return "Unknown"
 
 
-def prefill_formula(model_key: str, *, prompt_len: int) -> dict:
-    from ramulator.dram.lpddr5_pim import PIM_DATATYPE_RESOURCES
+def prefill_formula(
+    model_key: str, *, prompt_len: int, dram_class: str = "LPDDR5PIM"
+) -> dict:
+    if dram_class not in {"LPDDR5PIM", "LPDDR6PIM"}:
+        raise ValueError(f"Unsupported PIM backend for prefill formula: {dram_class}")
+    datatype_resources = (
+        LPDDR6_PIM_DATATYPE_RESOURCES
+        if dram_class == "LPDDR6PIM"
+        else LPDDR5_PIM_DATATYPE_RESOURCES
+    )
     from ramulator.workload_surrogate.generate_full_transformer import (
         FFN_VARIANT_PROJECTION_COUNTS,
         get_dense_prefill_manifests,
@@ -383,7 +430,7 @@ def prefill_formula(model_key: str, *, prompt_len: int) -> dict:
 
     spec = get_model_spec(model_key)
     attn_m, _ = get_dense_prefill_manifests(spec, prompt_len=prompt_len)
-    res = PIM_DATATYPE_RESOURCES[spec.datatype]
+    res = datatype_resources[spec.datatype]
     lanes = int(res["pim_lanes"])
     prim_ops = int(res["pim_ops_per_mac"])
     nkv = int(spec.num_kv_heads or spec.num_heads)

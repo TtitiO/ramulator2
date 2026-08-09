@@ -11,6 +11,7 @@ from pathlib import Path
 from ramulator.dram.addressing import extract_dram_layout
 
 DEFAULT_CFG = {
+    "dram_class": "LPDDR5PIM",
     "org_preset": "LPDDR5_8Gb_x16",
     "timing_preset": "LPDDR5_6400",
     "dram_kwargs": {"pim_datatype": "int8"},
@@ -22,12 +23,21 @@ DEFAULT_CFG = {
 COMMANDS_TO_COUNT = [
     "ACT1",
     "ACT2",
+    "CAS",
     "CAS_RD",
     "CAS_WR",
     "RD",
     "WR",
     "RDA",
     "WRA",
+    "RD_S",
+    "WR_S",
+    "RDA_S",
+    "WRA_S",
+    "RD_L",
+    "WR_L",
+    "RDA_L",
+    "WRA_L",
     "SB",
     "HAB",
     "HAB_PIM",
@@ -58,7 +68,12 @@ def _extract_dram_layout(dram) -> dict:
 
 
 def _make_dram(ramulator, cfg: dict):
-    return ramulator.dram.LPDDR5PIM(
+    dram_class = cfg.get("dram_class", "LPDDR5PIM")
+    try:
+        dram_type = getattr(ramulator.dram, dram_class)
+    except AttributeError as exc:
+        raise ValueError(f"Ramulator DRAM class {dram_class!r} is not available") from exc
+    return dram_type(
         org_preset=cfg["org_preset"],
         timing_preset=cfg["timing_preset"],
         **cfg.get("dram_kwargs", {}),
@@ -93,12 +108,15 @@ def _read_command_traces(prefix: Path) -> list[dict]:
     return traces
 
 
-def _attach_plugins(ramulator, tmpdir: Path):
+def _attach_plugins(ramulator, tmpdir: Path, dram):
     counts_path = tmpdir / "command_counts.csv"
     trace_prefix = tmpdir / "command_trace.csv"
+    commands = [
+        command for command in COMMANDS_TO_COUNT if command in type(dram).commands
+    ]
     return [
         ramulator.controller_plugin.CommandCounter(
-            commands_to_count=COMMANDS_TO_COUNT, path=str(counts_path)
+            commands_to_count=commands, path=str(counts_path)
         ),
         ramulator.controller_plugin.CmdTraceRecorder(path=str(trace_prefix)),
     ]
@@ -129,6 +147,7 @@ def _collect_observability(stats: dict, tmpdir: Path, cfg: dict) -> dict:
             selected[key] = ctrl[key]
     return {
         "modeled": {
+            "dram_class": cfg.get("dram_class", "LPDDR5PIM"),
             "command_counts": _read_command_counts(tmpdir / "command_counts.csv"),
             "command_traces": _read_command_traces(tmpdir / "command_trace.csv"),
             "controller_stats": selected,
@@ -138,7 +157,13 @@ def _collect_observability(stats: dict, tmpdir: Path, cfg: dict) -> dict:
 
 
 def _make_controller_and_mem(ramulator, dram, plugins):
-    ctrl = ramulator.controller.LPDDR5PIM(
+    controller_name = {
+        "LPDDR5PIM": "LPDDR5PIM",
+        "LPDDR6PIM": "LPDDR6PIM",
+    }.get(type(dram).__name__)
+    if controller_name is None:
+        raise ValueError(f"No PIM controller is declared for DRAM {type(dram).__name__}")
+    ctrl = getattr(ramulator.controller, controller_name)(
         dram=dram,
         scheduler=ramulator.scheduler.FRFCFS(),
         refresh_manager=ramulator.refresh_manager.NoRefresh(),
@@ -163,11 +188,12 @@ def run_single(
     seed: int | None = None,
     observability_dir: Path | None = None,
 ) -> dict:
-    """Run one host-traffic LPDDR5-PIM smoke point.
+    """Run one host-traffic LPDDR PIM smoke point.
 
     PIM command replay is handled by :mod:`ramulator.pimscope.backend`. This
     helper intentionally uses Ramulator 2.1's generic latency-throughput
-    frontend and no longer passes parameters removed from that frontend.
+    frontend and no longer passes parameters removed from that frontend. The
+    direct smoke path selects the controller from the resolved PIM DRAM class.
     """
     import ramulator
 
@@ -186,11 +212,22 @@ def run_single(
         seed=resolved_seed,
         read_ratio=int(read_ratio),
         stream_cls=int(cfg.get("stream_cls", 8)),
-        **layout,
+        addr_vec_size=layout["addr_vec_size"],
+        total_bank_units=layout["total_bank_units"],
+        row_pos=layout["row_pos"],
+        col_pos=layout["col_pos"],
+        num_rows=layout["num_rows"],
+        num_cols=layout["num_cols"],
+        internal_prefetch_size=layout["internal_prefetch_size"],
+        num_cls=layout["num_cls"],
+        bank_positions=layout["bank_positions"],
+        bank_counts=layout["bank_counts"],
     )
     with tempfile.TemporaryDirectory(dir=observability_dir) as tmp:
         tmpdir = Path(tmp)
-        mem = _make_controller_and_mem(ramulator, dram, _attach_plugins(ramulator, tmpdir))
+        mem = _make_controller_and_mem(
+            ramulator, dram, _attach_plugins(ramulator, tmpdir, dram)
+        )
         sim = ramulator.Simulation(frontend, mem)
         sim.run()
         sim.finalize()

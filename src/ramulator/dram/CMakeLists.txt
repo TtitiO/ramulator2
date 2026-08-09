@@ -38,6 +38,7 @@ target_sources(
   impl/LPDDR5.cpp
   impl/LPDDR5PIM.cpp
   impl/LPDDR6.cpp
+  impl/LPDDR6PIM.cpp
   impl/GDDR6.cpp
   impl/GDDR7.cpp
 )

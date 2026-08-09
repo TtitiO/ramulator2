@@ -11,7 +11,7 @@ from typing import Any
 from ramulator.pimscope.compat import canonicalize_legacy_result
 from ramulator.pimscope.config import MANIFEST_SCHEMA_VERSION, resolve_experiment_manifest
 from ramulator.workload_surrogate.lpddr5_pim_concrete_trace import (
-    CONCRETE_SCHEMA_VERSION,
+    CONCRETE_SCHEMA_VERSIONS,
     expanded_record_count,
     read_jsonl,
 )
@@ -105,6 +105,15 @@ def validate_result(
             _require(address_layout, field, "result.resolved_hardware.address_layout"),
             f"result.resolved_hardware.address_layout.{field}",
         )
+    dram_class = _require(address_layout, "dram_class", "result.resolved_hardware.address_layout")
+    if dram_class not in {"LPDDR5PIM", "LPDDR6PIM"}:
+        raise ValueError(
+            "result.resolved_hardware.address_layout.dram_class: unsupported PIM backend"
+        )
+    if dram_class != manifest["hardware"]["dram_class"]:
+        raise ValueError(
+            "result.resolved_hardware.address_layout.dram_class: does not match manifest"
+        )
     for field in ("level_names", "level_sizes", "address_level_sizes"):
         value = _require(address_layout, field, "result.resolved_hardware.address_layout")
         if not isinstance(value, list) or not value:
@@ -126,6 +135,15 @@ def validate_result(
     replay_ok = _require(simulation, "replay_ok", "result.simulation")
     if not isinstance(replay_ok, bool):
         raise ValueError("result.simulation.replay_ok: must be a boolean")
+    simulation_dram_class = _require(simulation, "dram_class", "result.simulation")
+    if simulation_dram_class != dram_class:
+        raise ValueError("result.simulation.dram_class: does not match resolved address layout")
+    trace_schema = _require(simulation, "trace_schema", "result.simulation")
+    expected_trace_schema = CONCRETE_SCHEMA_VERSIONS[dram_class]
+    if trace_schema != expected_trace_schema:
+        raise ValueError(
+            f"result.simulation.trace_schema: must be {expected_trace_schema!r} for {dram_class}"
+        )
     cycles = _nonnegative_int(
         _require(simulation, "cycles", "result.simulation"), "result.simulation.cycles"
     )
@@ -150,11 +168,13 @@ def validate_trace_file(
         trace_path,
         address_layout=address_layout,
         max_expanded_records=max_expanded_records,
+        expected_dram_class=address_layout.get("dram_class"),
     )
     return {
         "valid": True,
         "path": str(trace_path),
         "schema_version": header["schema_version"],
+        "dram_class": header.get("dram_class", "LPDDR5PIM"),
         "records": len(records),
         "expanded_records": expanded_record_count(records),
         "mapping_version": address_layout.get("mapping_version"),
@@ -210,7 +230,7 @@ def load_json_object(path: str | Path) -> dict[str, Any]:
 __all__ = [
     "AGGREGATE_SCHEMA_NAMES",
     "AGGREGATE_SCHEMA_VERSION",
-    "CONCRETE_SCHEMA_VERSION",
+    "CONCRETE_SCHEMA_VERSIONS",
     "RESULT_SCHEMA_NAME",
     "RESULT_SCHEMA_VERSION",
     "load_json_object",

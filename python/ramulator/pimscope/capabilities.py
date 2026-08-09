@@ -18,17 +18,18 @@ PIM_BACKEND_CAPABILITIES: dict[str, dict[str, Any]] = {
         ],
     },
     "LPDDR6PIM": {
-        "status": "planned",
+        "status": "experimental",
         "base_dram_class": "LPDDR6",
         "available_base_dram_model": True,
-        "controller": None,
-        "frontend": None,
-        "trace_schema": None,
+        "dram_class": "LPDDR6PIM",
+        "controller": "LPDDR6PIM",
+        "frontend": "LPDDR6PIMConcreteTrace",
+        "trace_schema": "lpddr6-pim-opcode-v0.1",
         "paper_artifact_backend": False,
         "notes": [
-            "Generic LPDDR6 timing support is not LPDDR6-PIM support.",
-            "Requires standard-specific PIM commands, scheduling, trace, hierarchy, "
-            "refresh, and power semantics.",
+            "Uses LPDDR6 CAS and short/long host access timing vocabulary.",
+            "PIM event energy is reported separately; standard LPDDR6 power is unavailable.",
+            "Paper artifact reproduction remains pinned to LPDDR5PIM.",
         ],
     },
 }
@@ -49,8 +50,8 @@ def require_supported_pim_backend(dram_class: str) -> dict[str, Any]:
     """Return the supported backend or fail with an explicit adaptation boundary."""
     if dram_class == "LPDDR6":
         raise ValueError(
-            "hardware.dram_class: generic LPDDR6 is available in Ramulator, but "
-            "LPDDR6-PIM is not implemented; use LPDDR5PIM or follow the P1-27 adaptation plan"
+            "hardware.dram_class: generic LPDDR6 is available in Ramulator; "
+            "select LPDDR6PIM explicitly for the experimental PIM backend"
         )
     capability = PIM_BACKEND_CAPABILITIES.get(dram_class)
     if capability is None:
@@ -63,7 +64,7 @@ def require_supported_pim_backend(dram_class: str) -> dict[str, Any]:
             f"hardware.dram_class: unknown PIM backend {dram_class!r}; "
             f"supported backends: {supported}"
         )
-    if capability["status"] != "supported":
+    if capability["status"] not in {"supported", "experimental"}:
         base = capability.get("base_dram_class")
         base_note = f"; base DRAM standard {base} is available" if base else ""
         raise ValueError(

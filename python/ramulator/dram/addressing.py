@@ -73,6 +73,7 @@ def extract_dram_layout(dram: Any) -> dict[str, Any]:
     total_bank_units = prod(controller_bank_counts)
 
     return {
+        "dram_class": cls.name,
         "mapping_version": 1,
         "level_names": level_names,
         "level_sizes": level_sizes,

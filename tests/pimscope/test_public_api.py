@@ -26,12 +26,12 @@ def _manifest():
 def test_lpddr6_capability_is_declared_but_not_advertised_as_pim():
     capabilities = pim_backend_capabilities()
     assert capabilities["LPDDR5PIM"]["status"] == "supported"
-    assert capabilities["LPDDR6PIM"]["status"] == "planned"
+    assert capabilities["LPDDR6PIM"]["status"] == "experimental"
     assert capabilities["LPDDR6PIM"]["available_base_dram_model"]
 
     raw = _manifest()
     raw["hardware"]["dram_class"] = "LPDDR6"
-    with pytest.raises(ValueError, match=r"generic LPDDR6.*LPDDR6-PIM is not implemented"):
+    with pytest.raises(ValueError, match=r"generic LPDDR6.*select LPDDR6PIM explicitly"):
         resolve_experiment_manifest(raw, source="test")
 
 
@@ -66,7 +66,7 @@ def test_public_experiment_api_replays_example():
     )
     assert result["status"] == "PASS"
     assert result["simulation"]["replay_ok"]
-    assert result["simulation"]["cycles"] == 5981
+    assert result["simulation"]["cycles"] == 11981
     assert result["provenance"]["config_source"] == "pimscope_custom_model.json"
     assert result["provenance"]["seed"] == 12345
     assert result["workload_summary"]["seed"] == 12345

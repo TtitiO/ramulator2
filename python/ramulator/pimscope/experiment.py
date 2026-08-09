@@ -1,4 +1,4 @@
-"""Public researcher experiment execution API for LPDDR5-PIM."""
+"""Public researcher experiment execution API for LPDDR PIM backends."""
 
 from __future__ import annotations
 
@@ -193,7 +193,7 @@ def run_experiment(
     if provenance:
         provenance_payload.update(dict(provenance))
 
-    return canonicalize_legacy_result({
+    result = canonicalize_legacy_result({
         "schema_version": RESULT_SCHEMA_VERSION,
         "schema_name": RESULT_SCHEMA_NAME,
         "experiment": manifest["experiment"],
@@ -204,6 +204,7 @@ def run_experiment(
             "organization": organization,
             "timing": timing,
             "address_layout": {
+                "dram_class": manifest["hardware"]["dram_class"],
                 "mapping_version": layout["mapping_version"],
                 "level_names": layout["level_names"],
                 "level_sizes": layout["level_sizes"],
@@ -232,3 +233,4 @@ def run_experiment(
         "simulation": replay,
         "provenance": provenance_payload,
     })
+    return result

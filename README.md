@@ -56,8 +56,8 @@ If you use Ramulator 2.1/2.0 in your work, please use the following citations:
 - `python/`
   Python wrappers for easy and scriptable configuration of Ramulator. The
   maintained PIMScope fork also provides the documented `ramulator.pimscope`
-  API for validated LPDDR5-PIM manifests, component construction, workload
-  lowering, concrete-trace replay, and structured experiment results.
+  API for validated LPDDR5PIM/LPDDR6PIM manifests, component construction,
+  workload lowering, concrete-trace replay, and structured experiment results.
 - `examples/`
   Ready-to-run example configurations and traces.
 - `tests/`
@@ -106,10 +106,11 @@ python3 examples/example_config.py
 
 You should see some example statistics being printed. You can head to Section 3 directly for detailed explanations and instructions on how to use and configure Ramulator 2.1 if you do not need to build Ramulator 2.1 in your custom environment.
 
-### 2.3 Public LPDDR5-PIM experiment API
+### 2.3 Public LPDDR PIM experiment API
 
 After installing the Python package and building the runtime extension, custom
-LPDDR5-PIM experiments can use the simulator-owned API directly:
+LPDDR5PIM or experimental LPDDR6PIM experiments can use the simulator-owned API
+directly:
 
 ```python
 from ramulator.pimscope import load_experiment_manifest, run_experiment
@@ -137,12 +138,12 @@ figures, and release checks remain in the parent PIMScope repository. New
 simulator functionality should be implemented in this package or in the
 underlying Ramulator component packages, not in a paper script.
 
-The current PIMScope backend supports `LPDDR5PIM` only. This repository also
-contains a generic `LPDDR6` DRAM standard, but that model does not provide
-LPDDR6 PIM commands, a compatible PIM controller/frontend, or validated PIM
-trace and power semantics. The parent release checklist tracks a deliberate
-LPDDR6-PIM adaptation; users must not substitute `LPDDR6` behind the
-LPDDR5-PIM controller and interpret the result as LPDDR6-PIM.
+The PIMScope backend supports `LPDDR5PIM` and an experimental `LPDDR6PIM`
+backend. Generic `LPDDR6` is not interchangeable with `LPDDR6PIM`; the
+LPDDR6-PIM path has a standard-specific controller, DRAM model, concrete trace
+schema, and LPDDR6 short/long access timing. Standard LPDDR6 background/command
+power is not yet available, and the backend is not used by paper artifacts.
+Users must not substitute generic `LPDDR6` behind a PIM controller.
 
 The parent repository's `pimscope` command is a thin file/argument adapter over
 this API. The old `scripts.lib.*` imports are compatibility shims for one

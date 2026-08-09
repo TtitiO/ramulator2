@@ -10,8 +10,8 @@ from ramulator.components import Component
 from ramulator.param import Param
 
 
-class LPDDR5PIMConcreteTrace(Component):
-    impl = "LPDDR5PIMConcreteTrace"
+class LPDDR6PIMConcreteTrace(Component):
+    impl = "LPDDR6PIMConcreteTrace"
     clock_ratio = Param(int, required=True, cpp_type="unsigned int")
     path = Param(str, required=True)
     pim_compute_request_type_id = Param(int, required=True)

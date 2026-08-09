@@ -12,6 +12,14 @@ def make_dram(**kwargs):
     return ramulator.dram.LPDDR5PIM(**BASE_KWARGS, **kwargs)
 
 
+def make_lpddr6_pim(**kwargs):
+    return ramulator.dram.LPDDR6PIM(
+        org_preset="LPDDR6_16Gb_x12",
+        timing_preset="LPDDR6_10667_BL24",
+        **kwargs,
+    )
+
+
 def test_default_config_serializes_explicit_execution_contract():
     cfg = make_dram().to_config()
 
@@ -73,6 +81,19 @@ def test_legacy_shared_block_names_normalize_with_deprecation_warnings():
     with pytest.warns(DeprecationWarning, match="shared_mpu_serial"):
         cfg = make_dram(pim_mac_execution_model="shared_mpu_serial").to_config()
     assert cfg["pim_mac_execution_model"] == "shared_block_serial"
+
+
+def test_lpddr6_pim_rejects_obsolete_compatibility_fields():
+    for field, value in (
+        ("pim_banks_per_mpu", 2),
+        ("pim_slot_cost", 1),
+        ("pim_mac_latency_scale", 2.0),
+        ("pim_incremental_energy_scale", 2.0),
+    ):
+        with pytest.raises(ValueError, match=field):
+            make_lpddr6_pim(**{field: value})
+    with pytest.raises(ValueError, match="shared_mpu_serial"):
+        make_lpddr6_pim(pim_mac_execution_model="shared_mpu_serial")
 
 
 def test_legacy_shared_block_field_conflicts_fail_closed():

@@ -94,22 +94,30 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
     def component_check() -> dict[str, Any]:
         import ramulator
 
-        dram = ramulator.dram.LPDDR5PIM(
-            org_preset="LPDDR5_8Gb_x16",
-            timing_preset="LPDDR5_6400",
-            pim_datatype="int8",
-            pim_banks_per_block=2,
-            pim_mac_execution_model="shared_block_serial",
-        )
-        organization, timing = dram.resolve()
-        return {
-            "dram_class": type(dram).__name__,
-            "rank": organization.get("rank"),
-            "bank": organization.get("bank"),
-            "timing_tCK_ps": timing.get("tCK_ps"),
-        }
+        resolved = []
+        for dram_class, org_preset, timing_preset in (
+            ("LPDDR5PIM", "LPDDR5_8Gb_x16", "LPDDR5_6400"),
+            ("LPDDR6PIM", "LPDDR6_16Gb_x12", "LPDDR6_10667_BL24"),
+        ):
+            dram = getattr(ramulator.dram, dram_class)(
+                org_preset=org_preset,
+                timing_preset=timing_preset,
+                pim_datatype="int8",
+                pim_banks_per_block=2,
+                pim_mac_execution_model="shared_block_serial",
+            )
+            organization, timing = dram.resolve()
+            resolved.append(
+                {
+                    "dram_class": type(dram).__name__,
+                    "rank": organization.get("rank"),
+                    "bank": organization.get("bank"),
+                    "timing_tCK_ps": timing.get("tCK_ps"),
+                }
+            )
+        return {"standards": resolved}
 
-    checks.append(_doctor_check("lpddr5-pim-component", component_check))
+    checks.append(_doctor_check("pim-dram-components", component_check))
     checks.append(
         _doctor_check(
             "pim-backend-capabilities",
@@ -202,7 +210,7 @@ def build_parser(*, prog: str = "ramulator-pimscope") -> argparse.ArgumentParser
         prog=prog,
         description=(
             "Validate and run configurable LPDDR5-PIM workload-surrogate "
-            "experiments (LPDDR6-PIM planned)"
+            "experiments (LPDDR5PIM supported; LPDDR6PIM experimental)"
         ),
     )
     subparsers = parser.add_subparsers(dest="command", required=True)

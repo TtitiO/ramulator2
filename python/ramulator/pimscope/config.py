@@ -115,11 +115,12 @@ SUPPORTED_WEIGHT_RESIDENCY = {"resident", "full_preload"}
 SUPPORTED_MAC_MODES = {"per_kind", "per_bank", "all_bank"}
 SUPPORTED_SCHEDULE_POLICIES = {"serialized", "overlap_independent_heads"}
 SUPPORTED_PIM_DATATYPES = {"int8", "fp16", "int16", "bf16"}
+SUPPORTED_PIM_DRAM_CLASSES = {"LPDDR5PIM", "LPDDR6PIM"}
 SUPPORTED_WORKLOAD_DATATYPES = {"int8", "fp16", "bf16"}
 SUPPORTED_FFN_VARIANTS = {"swiglu_3proj", "geglu_3proj", "relu_2proj"}
 SUPPORTED_PIM_EXECUTION_MODELS = {"shared_block_serial", "subbank_overlap_experimental"}
 
-# Public manifest fields accepted by ramulator.dram.LPDDR5PIM. Compatibility
+# Public manifest fields accepted by the LPDDR5PIM/LPDDR6PIM resource contract. Compatibility
 # aliases/deprecated scale parameters are intentionally excluded.
 SUPPORTED_PIM_FIELDS = {
     "pim_blocks_per_bank",
@@ -259,6 +260,11 @@ def _resolve_hardware(raw: Any) -> dict[str, Any]:
         )
 
     require_supported_pim_backend(hardware["dram_class"])
+    if hardware["dram_class"] not in SUPPORTED_PIM_DRAM_CLASSES:
+        _fail(
+            "hardware.dram_class",
+            f"supported PIM DRAM classes are {sorted(SUPPORTED_PIM_DRAM_CLASSES)}",
+        )
     for field in ("org_preset", "timing_preset"):
         if not isinstance(hardware[field], str) or not hardware[field]:
             _fail(f"hardware.{field}", "must be a non-empty string")
