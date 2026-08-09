@@ -6,6 +6,8 @@
  *
  * Regenerate:   python -m ramulator codegen LPDDR6
  ******************************************************************************/
+#include <fmt/format.h>
+
 #include "ramulator/dram/commands/ACT1.h"
 #include "ramulator/dram/commands/ACT2.h"
 #include "ramulator/dram/commands/CAS.h"
@@ -22,6 +24,7 @@
 #include "ramulator/dram/commands/WR_S.h"
 #include "ramulator/dram/commands/populate.h"
 #include "ramulator/dram/dram_spec.h"
+#include "ramulator/dram/lambdas.h"
 
 namespace Ramulator {
 
@@ -85,6 +88,10 @@ class LPDDR6 : public DRAMSpec {
     };
   };
 
+  struct PowerCommand {
+    enum : int { ACT, PRE, RD_S, RD_L, WR_S, WR_L, REF, COUNT };
+  };
+
   using CommandImpls =
       std::tuple<Cmd::ACT1<LPDDR6>, Cmd::ACT2<LPDDR6>, Cmd::PREpb<LPDDR6>, Cmd::PREab<LPDDR6>, Cmd::CAS<LPDDR6>,
                  Cmd::RD_S<LPDDR6>, Cmd::WR_S<LPDDR6>, Cmd::RDA_S<LPDDR6>, Cmd::WRA_S<LPDDR6>, Cmd::RD_L<LPDDR6>,
@@ -131,6 +138,183 @@ class LPDDR6 : public DRAMSpec {
 
     // Command handlers (function pointers, metadata, bank targets)
     populate_commands(CommandImpls{}, *this);
+    set_powers();
+  }
+
+  void set_powers() {
+    if (!drampower_enable) {
+      return;
+    }
+
+    if (!power_params.count("VDD1")) {
+      throw std::runtime_error("LPDDR6: missing required power field VDD1");
+    }
+    if (!power_params.count("VDD2C")) {
+      throw std::runtime_error("LPDDR6: missing required power field VDD2C");
+    }
+    if (!power_params.count("VDD2D")) {
+      throw std::runtime_error("LPDDR6: missing required power field VDD2D");
+    }
+    if (!power_params.count("IDD01")) {
+      throw std::runtime_error("LPDDR6: missing required power field IDD01");
+    }
+    if (!power_params.count("IDD02C")) {
+      throw std::runtime_error("LPDDR6: missing required power field IDD02C");
+    }
+    if (!power_params.count("IDD02D")) {
+      throw std::runtime_error("LPDDR6: missing required power field IDD02D");
+    }
+    if (!power_params.count("IDD2N1")) {
+      throw std::runtime_error("LPDDR6: missing required power field IDD2N1");
+    }
+    if (!power_params.count("IDD2N2C")) {
+      throw std::runtime_error("LPDDR6: missing required power field IDD2N2C");
+    }
+    if (!power_params.count("IDD2N2D")) {
+      throw std::runtime_error("LPDDR6: missing required power field IDD2N2D");
+    }
+    if (!power_params.count("IDD3N1")) {
+      throw std::runtime_error("LPDDR6: missing required power field IDD3N1");
+    }
+    if (!power_params.count("IDD3N2C")) {
+      throw std::runtime_error("LPDDR6: missing required power field IDD3N2C");
+    }
+    if (!power_params.count("IDD3N2D")) {
+      throw std::runtime_error("LPDDR6: missing required power field IDD3N2D");
+    }
+    if (!power_params.count("IDD4R1")) {
+      throw std::runtime_error("LPDDR6: missing required power field IDD4R1");
+    }
+    if (!power_params.count("IDD4R2C")) {
+      throw std::runtime_error("LPDDR6: missing required power field IDD4R2C");
+    }
+    if (!power_params.count("IDD4R2D")) {
+      throw std::runtime_error("LPDDR6: missing required power field IDD4R2D");
+    }
+    if (!power_params.count("IDD4W1")) {
+      throw std::runtime_error("LPDDR6: missing required power field IDD4W1");
+    }
+    if (!power_params.count("IDD4W2C")) {
+      throw std::runtime_error("LPDDR6: missing required power field IDD4W2C");
+    }
+    if (!power_params.count("IDD4W2D")) {
+      throw std::runtime_error("LPDDR6: missing required power field IDD4W2D");
+    }
+    if (!power_params.count("IDD51")) {
+      throw std::runtime_error("LPDDR6: missing required power field IDD51");
+    }
+    if (!power_params.count("IDD52C")) {
+      throw std::runtime_error("LPDDR6: missing required power field IDD52C");
+    }
+    if (!power_params.count("IDD52D")) {
+      throw std::runtime_error("LPDDR6: missing required power field IDD52D");
+    }
+
+    int num_ranks = organization.level_sizes[Level::Rank];
+    power_stats.resize(num_ranks);
+    for (int rank_id = 0; rank_id < num_ranks; rank_id++) {
+      power_stats[rank_id].rank_id = rank_id;
+      power_stats[rank_id].command_counters.resize(PowerCommand::COUNT, 0);
+      power_stats[rank_id].last_update_clk = 0;
+    }
+
+    powers.resize(level_count, std::vector<PowerFunc_t>(command_count, nullptr));
+    powers[Level::Bank][Command::ACT2] = Lambdas::Power::Bank::ACT<LPDDR6>;
+    powers[Level::Bank][Command::PREpb] = Lambdas::Power::Bank::PRE<LPDDR6>;
+    powers[Level::Bank][Command::RD_S] = Lambdas::Power::Bank::RD_S<LPDDR6>;
+    powers[Level::Bank][Command::RDA_S] = Lambdas::Power::Bank::RD_S<LPDDR6>;
+    powers[Level::Bank][Command::RD_L] = Lambdas::Power::Bank::RD_L<LPDDR6>;
+    powers[Level::Bank][Command::RDA_L] = Lambdas::Power::Bank::RD_L<LPDDR6>;
+    powers[Level::Bank][Command::WR_S] = Lambdas::Power::Bank::WR_S<LPDDR6>;
+    powers[Level::Bank][Command::WRA_S] = Lambdas::Power::Bank::WR_S<LPDDR6>;
+    powers[Level::Bank][Command::WR_L] = Lambdas::Power::Bank::WR_L<LPDDR6>;
+    powers[Level::Bank][Command::WRA_L] = Lambdas::Power::Bank::WR_L<LPDDR6>;
+    powers[Level::Rank][Command::ACT2] = Lambdas::Power::Rank::ACT<LPDDR6>;
+    powers[Level::Rank][Command::PREpb] = Lambdas::Power::Rank::PRE<LPDDR6>;
+    powers[Level::Rank][Command::PREab] = Lambdas::Power::Rank::PREA<LPDDR6>;
+    powers[Level::Rank][Command::REFab] = Lambdas::Power::Rank::REFab<LPDDR6>;
+    powers_incremental.resize(level_count, std::vector<PowerFunc_t>(command_count, nullptr));
+  }
+
+  void register_power_stats(Stats& stats) override {
+    if (!drampower_enable) {
+      return;
+    }
+    stats.add("total_background_energy", total_background_energy_pJ);
+    stats.add("total_cmd_energy", total_cmd_energy_pJ);
+    stats.add("total_energy", total_energy_pJ);
+    for (auto& power_stat : power_stats) {
+      stats.add(fmt::format("total_background_energy_rank_{}", power_stat.rank_id),
+                power_stat.background_active_energy_pJ + power_stat.background_idle_energy_pJ);
+      stats.add(fmt::format("total_cmd_energy_rank_{}", power_stat.rank_id), power_stat.command_energy_pJ);
+      stats.add(fmt::format("total_energy_rank_{}", power_stat.rank_id), power_stat.total_energy_pJ);
+      stats.add(fmt::format("background_active_energy_rank_{}", power_stat.rank_id),
+                power_stat.background_active_energy_pJ);
+      stats.add(fmt::format("background_idle_energy_rank_{}", power_stat.rank_id),
+                power_stat.background_idle_energy_pJ);
+      stats.add(fmt::format("active_cycles_rank_{}", power_stat.rank_id), power_stat.active_cycles);
+      stats.add(fmt::format("idle_cycles_rank_{}", power_stat.rank_id), power_stat.idle_cycles);
+    }
+  }
+
+  void finalize_power(Clk_t clk, DRAMNode* root) override {
+    if (!drampower_enable || root == nullptr) {
+      return;
+    }
+    total_background_energy_pJ = 0.0;
+    total_cmd_energy_pJ = 0.0;
+    total_energy_pJ = 0.0;
+    for (auto& rank_node : root->m_child_nodes) {
+      process_rank_energy(power_stats[rank_node->m_node_id], rank_node.get(), clk);
+    }
+  }
+
+  void process_rank_energy(DRAMPowerStats& rank_stats, DRAMNode* rank_node, Clk_t clk) {
+    Lambdas::Power::Rank::finalize_rank<LPDDR6>(rank_node, clk);
+    double tCK_ns = static_cast<double>(timing_vals[Timing::tCK_ps]) / 1000.0;
+    rank_stats.background_active_energy_pJ = ((power_params.at("VDD1") * power_params.at("IDD3N1")) +
+                                              (power_params.at("VDD2C") * power_params.at("IDD3N2C")) +
+                                              (power_params.at("VDD2D") * power_params.at("IDD3N2D"))) *
+                                             rank_stats.active_cycles * tCK_ns;
+    rank_stats.background_idle_energy_pJ = ((power_params.at("VDD1") * power_params.at("IDD2N1")) +
+                                            (power_params.at("VDD2C") * power_params.at("IDD2N2C")) +
+                                            (power_params.at("VDD2D") * power_params.at("IDD2N2D"))) *
+                                           rank_stats.idle_cycles * tCK_ns;
+    double act_cmd_energy = ((power_params.at("VDD1") * (power_params.at("IDD01") - power_params.at("IDD3N1"))) +
+                             (power_params.at("VDD2C") * (power_params.at("IDD02C") - power_params.at("IDD3N2C"))) +
+                             (power_params.at("VDD2D") * (power_params.at("IDD02D") - power_params.at("IDD3N2D")))) *
+                            rank_stats.command_counters[PowerCommand::ACT] * timing_vals[Timing::nRAS] * tCK_ns;
+    double pre_cmd_energy = ((power_params.at("VDD1") * (power_params.at("IDD01") - power_params.at("IDD2N1"))) +
+                             (power_params.at("VDD2C") * (power_params.at("IDD02C") - power_params.at("IDD2N2C"))) +
+                             (power_params.at("VDD2D") * (power_params.at("IDD02D") - power_params.at("IDD2N2D")))) *
+                            rank_stats.command_counters[PowerCommand::PRE] * timing_vals[Timing::nRP] * tCK_ns;
+    double rd_s_cmd_energy = ((power_params.at("VDD1") * (power_params.at("IDD4R1") - power_params.at("IDD3N1"))) +
+                              (power_params.at("VDD2C") * (power_params.at("IDD4R2C") - power_params.at("IDD3N2C"))) +
+                              (power_params.at("VDD2D") * (power_params.at("IDD4R2D") - power_params.at("IDD3N2D")))) *
+                             rank_stats.command_counters[PowerCommand::RD_S] * timing_vals[Timing::nBL_min] * tCK_ns;
+    double rd_l_cmd_energy = ((power_params.at("VDD1") * (power_params.at("IDD4R1") - power_params.at("IDD3N1"))) +
+                              (power_params.at("VDD2C") * (power_params.at("IDD4R2C") - power_params.at("IDD3N2C"))) +
+                              (power_params.at("VDD2D") * (power_params.at("IDD4R2D") - power_params.at("IDD3N2D")))) *
+                             rank_stats.command_counters[PowerCommand::RD_L] * timing_vals[Timing::nBL_min_L] * tCK_ns;
+    double wr_s_cmd_energy = ((power_params.at("VDD1") * (power_params.at("IDD4W1") - power_params.at("IDD3N1"))) +
+                              (power_params.at("VDD2C") * (power_params.at("IDD4W2C") - power_params.at("IDD3N2C"))) +
+                              (power_params.at("VDD2D") * (power_params.at("IDD4W2D") - power_params.at("IDD3N2D")))) *
+                             rank_stats.command_counters[PowerCommand::WR_S] * timing_vals[Timing::nBL_min] * tCK_ns;
+    double wr_l_cmd_energy = ((power_params.at("VDD1") * (power_params.at("IDD4W1") - power_params.at("IDD3N1"))) +
+                              (power_params.at("VDD2C") * (power_params.at("IDD4W2C") - power_params.at("IDD3N2C"))) +
+                              (power_params.at("VDD2D") * (power_params.at("IDD4W2D") - power_params.at("IDD3N2D")))) *
+                             rank_stats.command_counters[PowerCommand::WR_L] * timing_vals[Timing::nBL_min_L] * tCK_ns;
+    double ref_cmd_energy =
+        ((power_params.at("VDD1") * power_params.at("IDD51")) + (power_params.at("VDD2C") * power_params.at("IDD52C")) +
+         (power_params.at("VDD2D") * power_params.at("IDD52D"))) *
+        rank_stats.command_counters[PowerCommand::REF] * timing_vals[Timing::nRFC] * tCK_ns;
+    rank_stats.command_energy_pJ = act_cmd_energy + pre_cmd_energy + rd_s_cmd_energy + rd_l_cmd_energy +
+                                   wr_s_cmd_energy + wr_l_cmd_energy + ref_cmd_energy;
+    rank_stats.total_energy_pJ =
+        rank_stats.background_active_energy_pJ + rank_stats.background_idle_energy_pJ + rank_stats.command_energy_pJ;
+    total_background_energy_pJ += rank_stats.background_active_energy_pJ + rank_stats.background_idle_energy_pJ;
+    total_cmd_energy_pJ += rank_stats.command_energy_pJ;
+    total_energy_pJ += rank_stats.total_energy_pJ;
   }
 };
 

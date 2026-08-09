@@ -100,6 +100,36 @@ _PIM_ENERGY_SHARED_DEFAULTS: dict[str, float] = {
     "pim_mode_switch_energy_pJ": 0.0,
 }
 
+# DRAMPower v6.2.0 tests/tests_drampower/resources/lpddr6.json, converted
+# from A to mA for PIMScope's V * mA * ns = pJ equations. The upstream file
+# is a validation fixture with synthetic/zero fields, not a device datasheet.
+# Keep the provenance explicit and do not describe this profile as calibrated
+# LPDDR6 silicon power.
+DRAMPOWER_V620_LPDDR6_TEST_PROFILE: dict[str, float | bool] = {
+    "enabled": True,
+    "VDD1": 1.2,
+    "VDD2C": 1.2,
+    "VDD2D": 1.2,
+    "IDD01": 56.25,
+    "IDD02C": 0.0,
+    "IDD02D": 0.0,
+    "IDD2N1": 33.75,
+    "IDD2N2C": 0.0,
+    "IDD2N2D": 0.0,
+    "IDD3N1": 35.0,
+    "IDD3N2C": 0.0,
+    "IDD3N2D": 0.0,
+    "IDD4R1": 157.5,
+    "IDD4R2C": 0.0,
+    "IDD4R2D": 0.0,
+    "IDD4W1": 135.0,
+    "IDD4W2C": 0.0,
+    "IDD4W2D": 0.0,
+    "IDD51": 118.0,
+    "IDD52C": 0.0,
+    "IDD52D": 0.0,
+}
+
 for _dtype, _resource in PIM_DATATYPE_METADATA.items():
     for _field in PIM_EVENT_ENERGY_FIELDS:
         _resource[_field] = (
@@ -118,15 +148,51 @@ class LPDDR6PIM(LPDDR6):
 
     name = "LPDDR6PIM"
 
-    # LPDDR6 currently has no inherited current-table power model. Account only
-    # explicit PIM event coefficients; standard LPDDR6 background/command energy
-    # remains unsupported and is reported separately in capability metadata.
-    power_commands_counted = []
-    power_incremental_commands_counted = []
-    power_incremental_command_hooks = []
-    power_incremental_command_energy_timings = {}
-    power_incremental_command_event_energy_exprs = {}
-    power_incremental_command_energy_terms = {}
+    # Keep inherited LPDDR6 standard terms separate from PIM-only event energy.
+    # The default standard profile is the DRAMPower v6.2 test fixture above and
+    # is intentionally reported as experimental rather than silicon-calibrated.
+    power_incremental_commands_counted = [
+        "PIM_MAC", "PIM_MAC_AB", "PIM_BCAST", "HAB", "HAB_PIM", "SB",
+    ]
+    power_incremental_command_hooks = [
+        ("Rank", command, "COUNT_PIM_INCREMENTAL_ENERGY")
+        for command in power_incremental_commands_counted
+    ]
+    power_incremental_command_energy_timings = {
+        "PIM_MAC": "nPIM_MAC_LAT",
+        "PIM_MAC_AB": "nPIM_MAC_LAT",
+        "PIM_BCAST": "nBL_min",
+        "HAB": "nBL_min",
+        "HAB_PIM": "nBL_min",
+        "SB": "nBL_min",
+    }
+    _pim_mac_event_energy_expr = (
+        "pim_array_local_energy_pJ + "
+        "pim_lanes * pim_compute_energy_pJ_per_mac + "
+        "pim_cell_to_pim_energy_pJ_per_256b + "
+        "pim_vrf_access_energy_pJ + "
+        "pim_srf_access_energy_pJ"
+    )
+    power_incremental_command_event_energy_exprs = {
+        "PIM_MAC": _pim_mac_event_energy_expr,
+        "PIM_MAC_AB": _pim_mac_event_energy_expr,
+        "PIM_BCAST": "pim_cell_to_pim_energy_pJ_per_256b",
+        "HAB": "pim_mode_switch_energy_pJ",
+        "HAB_PIM": "pim_mode_switch_energy_pJ",
+        "SB": "pim_mode_switch_energy_pJ",
+    }
+    _rank_transfer_terms = [
+        (f"VDD{rail}", f"IDD0{rail}", f"IDD2N{rail}")
+        for rail in ("1", "2C", "2D")
+    ]
+    power_incremental_command_energy_terms = {
+        "PIM_MAC": [],
+        "PIM_MAC_AB": [],
+        "PIM_BCAST": _rank_transfer_terms,
+        "HAB": _rank_transfer_terms,
+        "HAB_PIM": _rank_transfer_terms,
+        "SB": _rank_transfer_terms,
+    }
 
     levels = {
         **LPDDR6.levels,
@@ -373,6 +439,8 @@ class LPDDR6PIM(LPDDR6):
         self.pim_datatype_class = pim_datatype_class
         self.pim_datatype_behavior_enabled = pim_datatype_behavior_enabled
         self.pim_datatype_resource = resource
+        if power is None:
+            power = dict(DRAMPOWER_V620_LPDDR6_TEST_PROFILE)
         super().__init__(
             org_preset=org_preset, timing_preset=timing_preset, power=power, **overrides
         )

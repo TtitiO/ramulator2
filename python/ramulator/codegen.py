@@ -157,6 +157,9 @@ def generate_header(cls):
         incremental_event_energy_exprs = dict(
             getattr(cls, "power_incremental_command_event_energy_exprs", {})
         )
+        power_unit_suffix = getattr(cls, "power_unit_suffix", " / 1E3")
+        if not isinstance(power_unit_suffix, str):
+            raise TypeError(f"{name}.power_unit_suffix must be a string")
 
         def _sum_term_expr(terms, subtract_baseline=False):
             parts = []
@@ -194,7 +197,7 @@ def generate_header(cls):
             cmd_formulas.append(
                 f"    double {counted_name.lower()}_cmd_energy = ({current_expr}) * "
                 f"rank_stats.command_counters[PowerCommand::{counted_name}] * "
-                f"timing_vals[Timing::{timing_name}] * tCK_ns / 1E3;"
+                f"timing_vals[Timing::{timing_name}] * tCK_ns{power_unit_suffix};"
             )
         cmd_formula_body = "\n".join(cmd_formulas)
         cmd_sum = " +\n        ".join(f"{c.lower()}_cmd_energy" for c in counted_names)
@@ -211,7 +214,7 @@ def generate_header(cls):
             if energy_terms:
                 terms.append(
                     f"({current_expr}) * rank_stats.incremental_command_counters[Command::{counted_name}] * "
-                    f"timing_vals[Timing::{timing_name}]{scale_expr} * tCK_ns / 1E3"
+                    f"timing_vals[Timing::{timing_name}]{scale_expr} * tCK_ns{power_unit_suffix}"
                 )
             if event_expr:
                 terms.append(
@@ -315,8 +318,8 @@ def generate_header(cls):
   void process_rank_energy(DRAMPowerStats& rank_stats, DRAMNode* rank_node, Clk_t clk) {{
     Lambdas::Power::Rank::finalize_rank<{name}>(rank_node, clk);
     double tCK_ns = static_cast<double>(timing_vals[Timing::tCK_ps]) / 1000.0;
-    rank_stats.background_active_energy_pJ = ({active_expr}) * rank_stats.active_cycles * tCK_ns / 1E3;
-    rank_stats.background_idle_energy_pJ = ({idle_expr}) * rank_stats.idle_cycles * tCK_ns / 1E3;
+    rank_stats.background_active_energy_pJ = ({active_expr}) * rank_stats.active_cycles * tCK_ns{power_unit_suffix};
+    rank_stats.background_idle_energy_pJ = ({idle_expr}) * rank_stats.idle_cycles * tCK_ns{power_unit_suffix};
 {cmd_formula_body}
     rank_stats.command_energy_pJ = {cmd_sum};
     rank_stats.total_energy_pJ = rank_stats.background_active_energy_pJ + rank_stats.background_idle_energy_pJ + rank_stats.command_energy_pJ;

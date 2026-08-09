@@ -186,22 +186,47 @@ def power_accounting_metadata(
     power_profile: str | None = None,
 ) -> dict[str, object]:
     if dram_class == "LPDDR6PIM":
+        base_energy = _finite_nonnegative_stat(stats, "total_energy")
+        pim_energy = _finite_nonnegative_stat(stats, "total_incremental_cmd_energy")
+        total_energy = (
+            None if base_energy is None or pim_energy is None else base_energy + pim_energy
+        )
+        coefficient_names = (
+            "pim_compute_energy_pJ_per_mac",
+            "pim_cell_to_pim_energy_pJ_per_256b",
+            "pim_vrf_access_energy_pJ",
+            "pim_srf_access_energy_pJ",
+            "pim_array_local_energy_pJ",
+            "pim_mode_switch_energy_pJ",
+        )
+        coefficients = {
+            key: float(stats[key]) for key in coefficient_names if key in stats
+        }
         return {
-            "status": "pim_event_coefficients_only",
-            "model": "literature_pim_event_coefficients_without_lpddr6_base",
-            "equation": (
-                "E_LPDDR6 unavailable; E_PIM not accumulated by native "
-                "LPDDR6PIM power model"
-            ),
-            "standard_background_command_energy_available": False,
+            "status": "experimental_drampower_reference",
+            "model": "drampower_v6.2_test_profile_plus_pimscope_pim_events",
+            "equation": "E = E_LPDDR6_reference + E_PIM",
+            "standard_background_command_energy_available": base_energy is not None,
+            "standard_power_calibrated_to_device": False,
             "pim_event_coefficients_available": True,
             "energy_units": "pJ",
-            "total_standard_energy_pJ": None,
-            "total_pim_event_energy_pJ": None,
-            "total_energy_pJ": None,
+            "total_standard_energy_pJ": base_energy,
+            "total_pim_event_energy_pJ": pim_energy,
+            "total_energy_pJ": total_energy,
+            "coefficients": coefficients,
+            "power_profile": power_profile or "DRAMPOWER_V620_LPDDR6_TEST_PROFILE",
+            "standard_power_source": {
+                "repository": "https://github.com/tukl-msd/DRAMPower",
+                "version": "v6.2.0",
+                "commit": "d8b980ab9e725480787b130798ad7ef675517b34",
+                "path": "tests/tests_drampower/resources/lpddr6.json",
+                "current_conversion": "A_to_mA",
+                "calibration": "test_fixture_not_device_datasheet",
+            },
             "notes": (
-                "LPDDR6PIM exposes explicit PIM event coefficients, but no validated "
-                "LPDDR6 background or command current table; total energy is not reported."
+                "LPDDR6 standard energy uses the DRAMPower v6.2.0 LPDDR6 test "
+                "fixture, not a device datasheet. PIM energy follows the LPDDR5PIM "
+                "event-coefficient method. Totals are experimental reference values."
             ),
         }
 
@@ -319,8 +344,8 @@ def replay_concrete_trace(
             ctrl,
             power_profile=(
                 "PAPER_LPDDR5_POWER"
-                if type(dram).__name__ == "LPDDR5PIM" and ctrl.get("total_energy") is not None
-                else None
+                if type(dram).__name__ == "LPDDR5PIM"
+                else "DRAMPOWER_V620_LPDDR6_TEST_PROFILE"
             ),
         ),
         "cycles": cycles,

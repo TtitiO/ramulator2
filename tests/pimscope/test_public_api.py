@@ -99,8 +99,10 @@ def test_public_experiment_api_replays_example():
     assert energy["coefficients"]["pim_cell_to_pim_energy_pJ_per_256b"] == pytest.approx(
         2.68
     )
-    assert energy["total_standard_energy_pJ"] > 0
-    assert energy["total_pim_event_energy_pJ"] > 0
+    # Camera-ready LPDDR5PIM accounting with every concrete record replayed once.
+    assert energy["total_standard_energy_pJ"] == pytest.approx(199.166)
+    assert energy["total_pim_event_energy_pJ"] == pytest.approx(4786.6752)
+    assert energy["total_energy_pJ"] == pytest.approx(4985.8412)
     assert energy["total_energy_pJ"] == pytest.approx(
         energy["total_standard_energy_pJ"] + energy["total_pim_event_energy_pJ"]
     )

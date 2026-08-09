@@ -160,14 +160,17 @@ def test_lpddr6_pim_refresh_uses_rank_scope_and_waits_for_compute():
     assert refreshes[0].addr_vec[dut.level_names.index("Bank")] == dut.ALL
 
 
-def test_lpddr6_pim_power_accounting_is_explicitly_unavailable_for_standard_energy():
+def test_lpddr6_pim_uses_explicit_drampower_reference_profile():
     dram = ramulator.dram.LPDDR6PIM(
         org_preset=LPDDR6_ORG,
         timing_preset=LPDDR6_TIMING,
     )
     config = dram.to_config()
     assert config["impl"] == "LPDDR6PIM"
-    assert config.get("power", {}).get("enabled", False) is False
+    assert config["power"]["enabled"] is True
+    assert config["power"]["VDD1"] == pytest.approx(1.2)
+    assert config["power"]["IDD4R1"] == pytest.approx(157.5)
+    assert config["power"]["IDD4R2C"] == pytest.approx(0.0)
     assert config["pim_compute_energy_pJ_per_mac"] == pytest.approx(0.35)
     assert config["pim_cell_to_pim_energy_pJ_per_256b"] == pytest.approx(2.68)
 

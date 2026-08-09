@@ -46,7 +46,11 @@ PIM_BACKEND_CAPABILITIES: dict[str, dict[str, Any]] = {
                 "Rank-local modes, refresh, addressing, and all-bank lowering are "
                 "validated for one and two ranks."
             ),
-            "PIM event energy is reported separately; standard LPDDR6 power is unavailable.",
+            (
+                "Standard energy uses the DRAMPower v6.2 LPDDR6 test fixture and is "
+                "not calibrated to a production device."
+            ),
+            "PIM event energy follows the LPDDR5PIM coefficient method.",
             "Paper artifact reproduction remains pinned to LPDDR5PIM.",
         ],
     },
