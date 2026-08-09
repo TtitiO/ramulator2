@@ -172,28 +172,74 @@ def create_memory_system(dram, cfg: dict | None = None):
     )
 
 
-def power_accounting_metadata(dram_class: str) -> dict[str, object]:
+def _finite_nonnegative_stat(stats: dict, key: str) -> float | None:
+    value = stats.get(key)
+    if value is None:
+        return None
+    value = float(value)
+    if value < 0:
+        raise ValueError(f"Ramulator power statistic {key!r} must be non-negative")
+    return value
+
+
+def power_accounting_metadata(
+    dram_class: str,
+    stats: dict,
+    *,
+    power_profile: str | None = None,
+) -> dict[str, object]:
     if dram_class == "LPDDR6PIM":
         return {
             "status": "pim_event_coefficients_only",
+            "model": "literature_pim_event_coefficients_without_lpddr6_base",
+            "equation": (
+                "E_LPDDR6 unavailable; E_PIM not accumulated by native "
+                "LPDDR6PIM power model"
+            ),
             "standard_background_command_energy_available": False,
             "pim_event_coefficients_available": True,
             "energy_units": "pJ",
             "total_standard_energy_pJ": None,
             "total_pim_event_energy_pJ": None,
+            "total_energy_pJ": None,
             "notes": (
                 "LPDDR6PIM exposes explicit PIM event coefficients, but no validated "
                 "LPDDR6 background or command current table; total energy is not reported."
             ),
         }
+
+    base_energy = _finite_nonnegative_stat(stats, "total_energy")
+    pim_energy = _finite_nonnegative_stat(stats, "total_incremental_cmd_energy")
+    total_energy = None if base_energy is None or pim_energy is None else base_energy + pim_energy
+    coefficient_names = (
+        "pim_compute_energy_pJ_per_mac",
+        "pim_cell_to_pim_energy_pJ_per_256b",
+        "pim_vrf_access_energy_pJ",
+        "pim_srf_access_energy_pJ",
+        "pim_array_local_energy_pJ",
+        "pim_mode_switch_energy_pJ",
+    )
+    coefficients = {
+        key: float(stats[key])
+        for key in coefficient_names
+        if key in stats
+    }
     return {
-        "status": "standard_plus_pim_incremental",
-        "standard_background_command_energy_available": True,
+        "status": "paper_two_layer",
+        "model": "pimscope_camera_ready_table_iii",
+        "equation": "E = E_LPDDR + E_PIM",
+        "standard_background_command_energy_available": base_energy is not None,
         "pim_event_coefficients_available": True,
         "energy_units": "pJ",
-        "total_standard_energy_pJ": None,
-        "total_pim_event_energy_pJ": None,
-        "notes": "Totals are populated when the DRAM power model is enabled.",
+        "total_standard_energy_pJ": base_energy,
+        "total_pim_event_energy_pJ": pim_energy,
+        "total_energy_pJ": total_energy,
+        "coefficients": coefficients,
+        "power_profile": power_profile or "unspecified",
+        "notes": (
+            "LPDDR5PIM follows the paper's two-layer decomposition. E_LPDDR uses "
+            "the configured DRAMPower IDD profile; E_PIM sums PIM command event terms."
+        ),
     }
 
 
@@ -275,7 +321,15 @@ def replay_concrete_trace(
             if type(dram).__name__ == "LPDDR6PIM"
             else "lpddr5-pim-opcode-v0.2"
         ),
-        "power_accounting": power_accounting_metadata(type(dram).__name__),
+        "power_accounting": power_accounting_metadata(
+            type(dram).__name__,
+            ctrl,
+            power_profile=(
+                "PAPER_LPDDR5_POWER"
+                if type(dram).__name__ == "LPDDR5PIM" and ctrl.get("total_energy") is not None
+                else None
+            ),
+        ),
         "cycles": cycles,
         "runtime_ns": cycles * tck_ns,
         "address_mapping_version": layout["mapping_version"],
@@ -305,6 +359,16 @@ def replay_concrete_trace(
         "pim_ab_completion_latency_cycles": _stat_int("pim_ab_completion_latency_cycles"),
         "num_bank_timing_blocked_cycles": _stat_int("num_bank_timing_blocked_cycles"),
         "num_shared_block_busy_blocked_cycles": _stat_int("num_shared_block_busy_blocked_cycles"),
+        "power_stats": {
+            key: ctrl[key]
+            for key in (
+                "total_background_energy",
+                "total_cmd_energy",
+                "total_energy",
+                "total_incremental_cmd_energy",
+            )
+            if key in ctrl
+        },
     }
 
 

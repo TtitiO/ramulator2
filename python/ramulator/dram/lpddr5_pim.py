@@ -82,8 +82,8 @@ _DEFAULT_PIM_BANKS_PER_BLOCK = object()
 # Literature-anchored energy defaults:
 #   compute:   int8=0.35 pJ/MAC (CD-PIM, LPDDR5-PIM-native)
 #              fp16=0.69, int16/bf16=0.55 (P3-LLM/LP-Spec ratios)
-#   movement:  cell_to_pim=686.08 pJ/256b (O'Connor ePre+ePost-GSA 2.68 pJ/bit)
-#   RF access: vrf=3.17 pJ, srf=0.40 pJ (WAX Eyeriss-style 0.099 pJ/B)
+#   movement:  cell_to_pim=2.68 pJ/256b (O'Connor FGDRAM model)
+#   RF access: vrf=3.17 pJ/256b, srf=0.40 pJ/32b (Gudaparthi et al.)
 #   mode_switch_energy: 0.0 (no public number)
 #   array_local_energy: 0.0 (folded into movement; charged in layer-1)
 #
@@ -98,10 +98,46 @@ _PIM_ENERGY_DEFAULTS_BY_DTYPE: dict[str, dict[str, float]] = {
 }
 _PIM_ENERGY_SHARED_DEFAULTS: dict[str, float] = {
     "pim_array_local_energy_pJ": 0.0,
-    "pim_cell_to_pim_energy_pJ_per_256b": 686.08,
+    "pim_cell_to_pim_energy_pJ_per_256b": 2.68,
     "pim_vrf_access_energy_pJ": 3.17,
     "pim_srf_access_energy_pJ": 0.40,
     "pim_mode_switch_energy_pJ": 0.0,
+}
+
+# The camera-ready paper's LPDDR5-6400 analysis profile. Currents are in mA,
+# voltages in V, and the generated DRAMPower equations report pJ. These are
+# analysis inputs, not a device-datasheet claim; callers may replace the
+# profile explicitly through the low-level DRAM API.
+PAPER_LPDDR5_POWER: dict[str, float | bool] = {
+    "enabled": True,
+    "VDD1": 1.80,
+    "VDD2H": 1.05,
+    "VDD2L": 0.90,
+    "VDDQ": 0.50,
+    "IDD01": 2.80,
+    "IDD02H": 32.00,
+    "IDD02L": 0.25,
+    "IDD0Q": 0.75,
+    "IDD2N1": 1.20,
+    "IDD2N2H": 16.00,
+    "IDD2N2L": 0.25,
+    "IDD2NQ": 0.75,
+    "IDD3N1": 1.20,
+    "IDD3N2H": 16.00,
+    "IDD3N2L": 0.25,
+    "IDD3NQ": 0.75,
+    "IDD4R1": 2.00,
+    "IDD4R2H": 18.00,
+    "IDD4R2L": 0.30,
+    "IDD4RQ": 0.85,
+    "IDD4W1": 2.10,
+    "IDD4W2H": 19.00,
+    "IDD4W2L": 0.35,
+    "IDD4WQ": 0.90,
+    "IDD5AB1": 2.20,
+    "IDD5AB2H": 35.00,
+    "IDD5AB2L": 0.25,
+    "IDD5ABQ": 0.75,
 }
 
 for _dtype, _resource in PIM_DATATYPE_METADATA.items():
@@ -467,6 +503,8 @@ class LPDDR5PIM(LPDDR5):
         self.pim_datatype_class = pim_datatype_class
         self.pim_datatype_behavior_enabled = pim_datatype_behavior_enabled
         self.pim_datatype_resource = resource
+        if power is None:
+            power = dict(PAPER_LPDDR5_POWER)
         super().__init__(
             org_preset=org_preset, timing_preset=timing_preset, power=power, **overrides
         )

@@ -162,6 +162,28 @@ def validate_result(
             "result.simulation.power_accounting: LPDDR6PIM cannot claim validated "
             "standard background/command energy"
         )
+    for field in (
+        "total_standard_energy_pJ",
+        "total_pim_event_energy_pJ",
+        "total_energy_pJ",
+    ):
+        value = power_accounting.get(field)
+        if value is not None and (
+            isinstance(value, bool) or not isinstance(value, (int, float)) or value < 0
+        ):
+            raise ValueError(f"result.simulation.power_accounting.{field}: must be non-negative")
+    if dram_class == "LPDDR5PIM":
+        standard_energy = power_accounting.get("total_standard_energy_pJ")
+        pim_energy = power_accounting.get("total_pim_event_energy_pJ")
+        total_energy = power_accounting.get("total_energy_pJ")
+        if standard_energy is not None and pim_energy is not None and total_energy is not None:
+            if abs(total_energy - (standard_energy + pim_energy)) > max(
+                1e-6, abs(total_energy) * 1e-9
+            ):
+                raise ValueError(
+                    "result.simulation.power_accounting.total_energy_pJ: must equal "
+                    "standard plus PIM event energy"
+                )
     expected_trace_schema = CONCRETE_SCHEMA_VERSIONS[dram_class]
     if trace_schema != expected_trace_schema:
         raise ValueError(

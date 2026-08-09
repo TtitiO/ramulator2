@@ -70,6 +70,19 @@ def test_public_experiment_api_replays_example():
     assert result["provenance"]["config_source"] == "pimscope_custom_model.json"
     assert result["provenance"]["seed"] == 12345
     assert result["workload_summary"]["seed"] == 12345
+    energy = result["simulation"]["power_accounting"]
+    assert energy["status"] == "paper_two_layer"
+    assert energy["equation"] == "E = E_LPDDR + E_PIM"
+    assert energy["power_profile"] == "PAPER_LPDDR5_POWER"
+    assert energy["coefficients"]["pim_compute_energy_pJ_per_mac"] == pytest.approx(0.35)
+    assert energy["coefficients"]["pim_cell_to_pim_energy_pJ_per_256b"] == pytest.approx(
+        2.68
+    )
+    assert energy["total_standard_energy_pJ"] > 0
+    assert energy["total_pim_event_energy_pJ"] > 0
+    assert energy["total_energy_pJ"] == pytest.approx(
+        energy["total_standard_energy_pJ"] + energy["total_pim_event_energy_pJ"]
+    )
 
 
 def test_public_api_does_not_mutate_global_expanded_record_limit(monkeypatch):

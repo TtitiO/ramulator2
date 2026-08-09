@@ -102,6 +102,21 @@ def assert_pim_latency_split_identity(stats: dict):
         )
 
 
+def test_paper_energy_defaults_match_camera_ready_table_iii():
+    dram = ramulator.dram.LPDDR5PIM(
+        org_preset="LPDDR5_8Gb_x16",
+        timing_preset="LPDDR5_6400",
+    )
+    config = dram.to_config()
+    assert config["power"]["enabled"] is True
+    assert config["power"]["VDD1"] == pytest.approx(1.80)
+    assert config["power"]["IDD4R2H"] == pytest.approx(18.00)
+    assert config["pim_compute_energy_pJ_per_mac"] == pytest.approx(0.35)
+    assert config["pim_cell_to_pim_energy_pJ_per_256b"] == pytest.approx(2.68)
+    assert config["pim_vrf_access_energy_pJ"] == pytest.approx(3.17)
+    assert config["pim_srf_access_energy_pJ"] == pytest.approx(0.40)
+
+
 def test_pimcompute_issues_act1_act2_pim_mac():
     dut = make_dut()
     a = dut.addr_vec(Rank=0, BankGroup=0, Bank=0, Row=9, Column=0)

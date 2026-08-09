@@ -78,8 +78,8 @@ PIM_MAC_EXECUTION_MODELS = {
 # Literature-anchored energy defaults:
 #   compute:   int8=0.35 pJ/MAC (CD-PIM, LPDDR6-PIM-native)
 #              fp16=0.69, int16/bf16=0.55 (P3-LLM/LP-Spec ratios)
-#   movement:  cell_to_pim=686.08 pJ/256b (O'Connor ePre+ePost-GSA 2.68 pJ/bit)
-#   RF access: vrf=3.17 pJ, srf=0.40 pJ (WAX Eyeriss-style 0.099 pJ/B)
+#   movement:  cell_to_pim=2.68 pJ/256b (paper Table III, O'Connor FGDRAM)
+#   RF access: vrf=3.17 pJ/256b, srf=0.40 pJ/32b (paper Table III)
 #   mode_switch_energy: 0.0 (no public number)
 #   array_local_energy: 0.0 (folded into movement; charged in layer-1)
 #
@@ -94,7 +94,7 @@ _PIM_ENERGY_DEFAULTS_BY_DTYPE: dict[str, dict[str, float]] = {
 }
 _PIM_ENERGY_SHARED_DEFAULTS: dict[str, float] = {
     "pim_array_local_energy_pJ": 0.0,
-    "pim_cell_to_pim_energy_pJ_per_256b": 686.08,
+    "pim_cell_to_pim_energy_pJ_per_256b": 2.68,
     "pim_vrf_access_energy_pJ": 3.17,
     "pim_srf_access_energy_pJ": 0.40,
     "pim_mode_switch_energy_pJ": 0.0,

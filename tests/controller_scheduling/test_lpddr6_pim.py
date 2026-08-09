@@ -135,6 +135,8 @@ def test_lpddr6_pim_power_accounting_is_explicitly_unavailable_for_standard_ener
     config = dram.to_config()
     assert config["impl"] == "LPDDR6PIM"
     assert config.get("power", {}).get("enabled", False) is False
+    assert config["pim_compute_energy_pJ_per_mac"] == pytest.approx(0.35)
+    assert config["pim_cell_to_pim_energy_pJ_per_256b"] == pytest.approx(2.68)
 
 
 def test_lpddr6_pim_datatype_resources_change_only_when_behavior_enabled():
