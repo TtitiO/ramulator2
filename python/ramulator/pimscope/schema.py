@@ -139,6 +139,29 @@ def validate_result(
     if simulation_dram_class != dram_class:
         raise ValueError("result.simulation.dram_class: does not match resolved address layout")
     trace_schema = _require(simulation, "trace_schema", "result.simulation")
+    power_accounting = _object(
+        _require(simulation, "power_accounting", "result.simulation"),
+        "result.simulation.power_accounting",
+    )
+    if power_accounting.get("energy_units") != "pJ":
+        raise ValueError("result.simulation.power_accounting.energy_units: must be 'pJ'")
+    if not isinstance(power_accounting.get("standard_background_command_energy_available"), bool):
+        raise ValueError(
+            "result.simulation.power_accounting.standard_background_command_energy_available: "
+            "must be a boolean"
+        )
+    if not isinstance(power_accounting.get("pim_event_coefficients_available"), bool):
+        raise ValueError(
+            "result.simulation.power_accounting.pim_event_coefficients_available: "
+            "must be a boolean"
+        )
+    if dram_class == "LPDDR6PIM" and power_accounting[
+        "standard_background_command_energy_available"
+    ]:
+        raise ValueError(
+            "result.simulation.power_accounting: LPDDR6PIM cannot claim validated "
+            "standard background/command energy"
+        )
     expected_trace_schema = CONCRETE_SCHEMA_VERSIONS[dram_class]
     if trace_schema != expected_trace_schema:
         raise ValueError(

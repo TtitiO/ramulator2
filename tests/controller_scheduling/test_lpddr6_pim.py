@@ -127,6 +127,16 @@ def test_lpddr6_pim_refresh_uses_rank_scope_and_waits_for_compute():
     assert refreshes[0].addr_vec[dut.level_names.index("Bank")] == dut.ALL
 
 
+def test_lpddr6_pim_power_accounting_is_explicitly_unavailable_for_standard_energy():
+    dram = ramulator.dram.LPDDR6PIM(
+        org_preset=LPDDR6_ORG,
+        timing_preset=LPDDR6_TIMING,
+    )
+    config = dram.to_config()
+    assert config["impl"] == "LPDDR6PIM"
+    assert config.get("power", {}).get("enabled", False) is False
+
+
 def test_lpddr6_pim_datatype_resources_change_only_when_behavior_enabled():
     int8 = make_dut(pim_datatype="int8", pim_datatype_behavior_enabled=True)
     fp16 = make_dut(pim_datatype="fp16", pim_datatype_behavior_enabled=True)

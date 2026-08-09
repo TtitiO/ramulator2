@@ -172,6 +172,31 @@ def create_memory_system(dram, cfg: dict | None = None):
     )
 
 
+def power_accounting_metadata(dram_class: str) -> dict[str, object]:
+    if dram_class == "LPDDR6PIM":
+        return {
+            "status": "pim_event_coefficients_only",
+            "standard_background_command_energy_available": False,
+            "pim_event_coefficients_available": True,
+            "energy_units": "pJ",
+            "total_standard_energy_pJ": None,
+            "total_pim_event_energy_pJ": None,
+            "notes": (
+                "LPDDR6PIM exposes explicit PIM event coefficients, but no validated "
+                "LPDDR6 background or command current table; total energy is not reported."
+            ),
+        }
+    return {
+        "status": "standard_plus_pim_incremental",
+        "standard_background_command_energy_available": True,
+        "pim_event_coefficients_available": True,
+        "energy_units": "pJ",
+        "total_standard_energy_pJ": None,
+        "total_pim_event_energy_pJ": None,
+        "notes": "Totals are populated when the DRAM power model is enabled.",
+    }
+
+
 def count_concrete_opcodes(concrete: list[dict]) -> dict[str, int]:
     counts: Counter[str] = Counter()
     for record in concrete:
@@ -250,6 +275,7 @@ def replay_concrete_trace(
             if type(dram).__name__ == "LPDDR6PIM"
             else "lpddr5-pim-opcode-v0.2"
         ),
+        "power_accounting": power_accounting_metadata(type(dram).__name__),
         "cycles": cycles,
         "runtime_ns": cycles * tck_ns,
         "address_mapping_version": layout["mapping_version"],
