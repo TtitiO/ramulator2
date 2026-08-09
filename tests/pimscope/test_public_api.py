@@ -66,7 +66,10 @@ def test_public_experiment_api_replays_example():
     )
     assert result["status"] == "PASS"
     assert result["simulation"]["replay_ok"]
-    assert result["simulation"]["cycles"] == 11981
+    # The concrete frontend must replay each trace record exactly once.  This
+    # value guards against duplicate base/derived initialization, which used to
+    # replay every request twice and report 11,981 cycles.
+    assert result["simulation"]["cycles"] == 5981
     assert result["provenance"]["config_source"] == "pimscope_custom_model.json"
     assert result["provenance"]["seed"] == 12345
     assert result["workload_summary"]["seed"] == 12345

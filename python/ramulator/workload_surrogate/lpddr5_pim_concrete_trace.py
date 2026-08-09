@@ -114,7 +114,13 @@ def build_header(*, dram_class: str = "LPDDR5PIM") -> dict:
 
 
 def validate_header(header: dict, *, expected_dram_class: str | None = None) -> None:
-    dram_class = header.get("dram_class", "LPDDR5PIM")
+    if not isinstance(header, dict):
+        raise ValueError("Concrete opcode trace header must be a JSON object")
+    if "dram_class" not in header:
+        raise ValueError("Concrete opcode trace header missing required field: dram_class")
+    if "schema_version" not in header:
+        raise ValueError("Concrete opcode trace header missing required field: schema_version")
+    dram_class = header["dram_class"]
     if dram_class not in CONCRETE_SCHEMA_VERSIONS:
         raise ValueError(f"Unsupported concrete opcode dram_class: {dram_class}")
     if expected_dram_class is not None and dram_class != expected_dram_class:
@@ -445,9 +451,24 @@ def read_jsonl(
     ]
     if not lines:
         raise ValueError("Concrete opcode trace is empty")
-    header = json.loads(lines[0])
+    try:
+        header = json.loads(lines[0])
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Concrete opcode trace line 1 is invalid JSON: {exc.msg}") from exc
     validate_header(header, expected_dram_class=expected_dram_class)
-    records = [json.loads(line) for line in lines[1:]]
+    records = []
+    for line_number, line in enumerate(lines[1:], start=2):
+        try:
+            record = json.loads(line)
+        except json.JSONDecodeError as exc:
+            raise ValueError(
+                f"Concrete opcode trace line {line_number} is invalid JSON: {exc.msg}"
+            ) from exc
+        if not isinstance(record, dict):
+            raise ValueError(
+                f"Concrete opcode trace line {line_number} record must be a JSON object"
+            )
+        records.append(record)
     validate_sequence(
         records,
         address_layout=address_layout,

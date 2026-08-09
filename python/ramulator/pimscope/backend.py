@@ -14,6 +14,7 @@ from ramulator.dram.addressing import concrete_address_layout, extract_dram_layo
 from ramulator.dram.lpddr5_pim import PIM_DATATYPE_RESOURCES as LPDDR5_PIM_DATATYPE_RESOURCES
 from ramulator.dram.lpddr6_pim import PIM_DATATYPE_RESOURCES as LPDDR6_PIM_DATATYPE_RESOURCES
 from ramulator.pimscope.config import ResolvedExperiment
+from ramulator.workload_surrogate.lpddr5_pim_concrete_trace import CONCRETE_SCHEMA_VERSIONS
 
 LPDDR5_PIM_CONFIG = {
     "dram_class": "LPDDR5PIM",
@@ -125,19 +126,15 @@ def create_concrete_frontend(
         kwargs["max_trace_bytes"] = max_trace_bytes
     if max_expanded_records is not None:
         kwargs["max_expanded_records"] = max_expanded_records
+    dram_class = type(dram).__name__
     frontend_name = {
         "LPDDR5PIM": "LPDDR5PIMConcreteTrace",
         "LPDDR6PIM": "LPDDR6PIMConcreteTrace",
-    }.get(type(dram).__name__)
+    }.get(dram_class)
     if frontend_name is None:
-        raise ValueError(
-            f"No concrete PIM frontend is declared for DRAM {type(dram).__name__}"
-        )
-    if type(dram).__name__ == "LPDDR6PIM":
-        kwargs["expected_schema_version"] = "lpddr6-pim-opcode-v0.1"
-        kwargs["expected_dram_class"] = "LPDDR6PIM"
-    else:
-        kwargs["expected_dram_class"] = "LPDDR5PIM"
+        raise ValueError(f"No concrete PIM frontend is declared for DRAM {dram_class}")
+    kwargs["expected_schema_version"] = CONCRETE_SCHEMA_VERSIONS[dram_class]
+    kwargs["expected_dram_class"] = dram_class
     return getattr(ramulator.frontend, frontend_name)(**kwargs)
 
 
@@ -316,11 +313,7 @@ def replay_concrete_trace(
 
     return {
         "dram_class": type(dram).__name__,
-        "trace_schema": (
-            "lpddr6-pim-opcode-v0.1"
-            if type(dram).__name__ == "LPDDR6PIM"
-            else "lpddr5-pim-opcode-v0.2"
-        ),
+        "trace_schema": CONCRETE_SCHEMA_VERSIONS[type(dram).__name__],
         "power_accounting": power_accounting_metadata(
             type(dram).__name__,
             ctrl,

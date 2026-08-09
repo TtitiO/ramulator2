@@ -20,9 +20,7 @@ namespace fs = std::filesystem;
 class LPDDRPIMConcreteTrace : public IFrontEnd, public Implementation {
  public:
   LPDDRPIMConcreteTrace(const ConfigNode& config, Implementation* parent)
-      : Implementation(config, "frontend", "LPDDRPIMConcreteTrace", parent) {
-    init();
-  }
+      : Implementation(config, "frontend", "LPDDRPIMConcreteTrace", parent) {}
 
  private:
   struct OpcodeRecord {
