@@ -33,6 +33,12 @@ def test_lpddr6_capability_is_declared_but_not_advertised_as_pim():
         "controllers": 1,
         "channels": 1,
     }
+    assert capabilities["LPDDR6PIM"]["subchannel_model"] == {
+        "status": "single_subchannel_only",
+        "modeled_subchannels_per_channel": 1,
+        "refresh_density_reference_subchannels": 2,
+        "independent_subchannel_scheduling": False,
+    }
 
     raw = _manifest()
     raw["hardware"]["dram_class"] = "LPDDR6"

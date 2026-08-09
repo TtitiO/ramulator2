@@ -30,8 +30,18 @@ PIM_BACKEND_CAPABILITIES: dict[str, dict[str, Any]] = {
         "paper_artifact_backend": False,
         "validated_rank_counts": [1, 2],
         "validated_topology": {"controllers": 1, "channels": 1},
+        "subchannel_model": {
+            "status": "single_subchannel_only",
+            "modeled_subchannels_per_channel": 1,
+            "refresh_density_reference_subchannels": 2,
+            "independent_subchannel_scheduling": False,
+        },
         "notes": [
             "Uses LPDDR6 CAS and short/long host access timing vocabulary.",
+            (
+                "One modeled Channel represents one 12-bit sub-channel; the paired "
+                "physical sub-channel is not instantiated."
+            ),
             (
                 "Rank-local modes, refresh, addressing, and all-bank lowering are "
                 "validated for one and two ranks."
@@ -51,6 +61,7 @@ def pim_backend_capabilities() -> dict[str, dict[str, Any]]:
             "notes": list(capability.get("notes", [])),
             "validated_rank_counts": list(capability.get("validated_rank_counts", [])),
             "validated_topology": dict(capability.get("validated_topology", {})),
+            "subchannel_model": dict(capability.get("subchannel_model", {})),
         }
         for name, capability in PIM_BACKEND_CAPABILITIES.items()
     }

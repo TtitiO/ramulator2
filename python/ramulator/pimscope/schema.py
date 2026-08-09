@@ -124,6 +124,28 @@ def validate_result(
         raise ValueError(
             "result.resolved_hardware.address_layout: level_names and level_sizes must align"
         )
+    subchannel_model = address_layout.get("subchannel_model")
+    if dram_class == "LPDDR6PIM":
+        subchannel_model = _object(
+            subchannel_model,
+            "result.resolved_hardware.address_layout.subchannel_model",
+        )
+        expected_subchannel_model = {
+            "status": "single_subchannel_only",
+            "modeled_subchannels_per_channel": 1,
+            "refresh_density_reference_subchannels": 2,
+            "independent_subchannel_scheduling": False,
+        }
+        if subchannel_model != expected_subchannel_model:
+            raise ValueError(
+                "result.resolved_hardware.address_layout.subchannel_model: "
+                "unsupported LPDDR6 sub-channel interpretation"
+            )
+    elif subchannel_model is not None:
+        raise ValueError(
+            "result.resolved_hardware.address_layout.subchannel_model: "
+            "must be null for LPDDR5PIM"
+        )
 
     workload = _object(result["workload_summary"], "result.workload_summary")
     for field in ("model", "phase", "semantic_records", "concrete_records"):

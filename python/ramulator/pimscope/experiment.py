@@ -49,6 +49,7 @@ def validate_backend(resolved: ResolvedExperiment) -> dict[str, Any]:
             "internal_prefetch_size": layout["internal_prefetch_size"],
             "tx_bytes": layout["tx_bytes"],
             "capacity_bytes": layout["capacity_bytes"],
+            "subchannel_model": layout["subchannel_model"],
         },
         "dram_config": dram.to_config(),
     }
@@ -212,6 +213,7 @@ def run_experiment(
                 "internal_prefetch_size": layout["internal_prefetch_size"],
                 "tx_bytes": layout["tx_bytes"],
                 "capacity_bytes": layout["capacity_bytes"],
+                "subchannel_model": layout["subchannel_model"],
             },
             "effective_max_inflight_requests": effective_inflight,
         },

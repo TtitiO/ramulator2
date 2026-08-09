@@ -12,6 +12,17 @@ class LPDDR6(DRAMStandard):
     data_payload_bytes = 32
     read_latency = "nRL + nBL_min"
 
+    # The current hierarchy instantiates one 12-bit LPDDR6 sub-channel as one
+    # Ramulator Channel. JESD209-6 refresh tables specify density per pair of
+    # sub-channels, but the paired sub-channel is not an independently modeled
+    # hierarchy/timing domain here.
+    subchannel_model = {
+        "status": "single_subchannel_only",
+        "modeled_subchannels_per_channel": 1,
+        "refresh_density_reference_subchannels": 2,
+        "independent_subchannel_scheduling": False,
+    }
+
     levels = {
         "Channel":      "N_A",
         "Rank":         "N_A",
