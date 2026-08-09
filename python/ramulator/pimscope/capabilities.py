@@ -12,6 +12,8 @@ PIM_BACKEND_CAPABILITIES: dict[str, dict[str, Any]] = {
         "frontend": "LPDDR5PIMConcreteTrace",
         "trace_schema": "lpddr5-pim-opcode-v0.2",
         "paper_artifact_backend": True,
+        "validated_rank_counts": [1, 2],
+        "validated_topology": {"controllers": 1, "channels": 1},
         "notes": [
             "Validated for the public one-controller/channel topology.",
             "Paper artifact reproduction remains pinned to this backend.",
@@ -26,8 +28,14 @@ PIM_BACKEND_CAPABILITIES: dict[str, dict[str, Any]] = {
         "frontend": "LPDDR6PIMConcreteTrace",
         "trace_schema": "lpddr6-pim-opcode-v0.1",
         "paper_artifact_backend": False,
+        "validated_rank_counts": [1, 2],
+        "validated_topology": {"controllers": 1, "channels": 1},
         "notes": [
             "Uses LPDDR6 CAS and short/long host access timing vocabulary.",
+            (
+                "Rank-local modes, refresh, addressing, and all-bank lowering are "
+                "validated for one and two ranks."
+            ),
             "PIM event energy is reported separately; standard LPDDR6 power is unavailable.",
             "Paper artifact reproduction remains pinned to LPDDR5PIM.",
         ],
@@ -41,6 +49,8 @@ def pim_backend_capabilities() -> dict[str, dict[str, Any]]:
         name: {
             **capability,
             "notes": list(capability.get("notes", [])),
+            "validated_rank_counts": list(capability.get("validated_rank_counts", [])),
+            "validated_topology": dict(capability.get("validated_topology", {})),
         }
         for name, capability in PIM_BACKEND_CAPABILITIES.items()
     }

@@ -67,6 +67,7 @@ class LPDDRPIMConcreteTrace : public IFrontEnd, public Implementation {
   std::vector<int> m_address_level_sizes;
   int m_internal_prefetch_size = 0;
   int m_tx_bytes = 0;
+  int m_rank_level = -1;
   int m_bank_level = -1;
   int m_row_level = -1;
   int m_col_level = -1;
@@ -226,6 +227,9 @@ class LPDDRPIMConcreteTrace : public IFrontEnd, public Implementation {
             "LPDDRPIMConcreteTrace: level '{}' sizes must satisfy 0 < address size <= physical size",
             m_level_names[index]));
       }
+      if (m_level_names[index] == "Rank") {
+        m_rank_level = static_cast<int>(index);
+      }
       if (m_level_names[index] == "Bank") {
         m_bank_level = static_cast<int>(index);
       }
@@ -236,9 +240,11 @@ class LPDDRPIMConcreteTrace : public IFrontEnd, public Implementation {
         m_col_level = static_cast<int>(index);
       }
     }
-    if (m_bank_level < 0 || m_row_level < 0 || m_col_level != m_addr_vec_size - 1) {
+    if (m_rank_level < 0 || m_bank_level < 0 || m_row_level < 0 ||
+        m_col_level != m_addr_vec_size - 1 || m_rank_level >= m_bank_level) {
       throw std::runtime_error(
-          "LPDDRPIMConcreteTrace: address layout must contain Bank and Row, with Column final");
+          "LPDDRPIMConcreteTrace: address layout must contain ordered Rank/Bank/Row levels, "
+          "with Column final");
     }
     if (m_internal_prefetch_size <= 0 ||
         m_level_sizes[m_col_level] % m_internal_prefetch_size != 0 ||
@@ -617,39 +623,87 @@ class LPDDRPIMConcreteTrace : public IFrontEnd, public Implementation {
 
   void validate_sequence() const {
     enum class Mode { SB, HAB, HAB_PIM };
-    Mode mode = Mode::SB;
-    bool saw_bcast_since_hab = false;
+    struct RankSequenceState {
+      Mode mode = Mode::SB;
+      bool saw_bcast_since_hab = false;
+    };
+    std::vector<RankSequenceState> rank_states(m_level_sizes[m_rank_level]);
+
     for (size_t i = 0; i < m_records.size(); i++) {
-      const std::string& opcode = m_records[i].opcode;
+      const OpcodeRecord& record = m_records[i];
+      const std::string& opcode = record.opcode;
+      std::vector<int> rank_ids = {record.addr_vec[m_rank_level]};
+      if (opcode == "PIM_MAC" && !record.bank_sequence.empty() &&
+          !record.bank_positions.empty()) {
+        auto rank_position = std::find(
+            record.bank_positions.begin(), record.bank_positions.end(), m_rank_level);
+        if (rank_position != record.bank_positions.end()) {
+          const int rank_position_index = static_cast<int>(
+              std::distance(record.bank_positions.begin(), rank_position));
+          rank_ids.clear();
+          for (int flat_bank : record.bank_sequence) {
+            int remaining = flat_bank;
+            int rank_id = record.addr_vec[m_rank_level];
+            for (int index = static_cast<int>(record.bank_positions.size()) - 1;
+                 index >= 0;
+                 index--) {
+              const int coordinate = remaining % record.bank_counts[index];
+              remaining /= record.bank_counts[index];
+              if (index == rank_position_index) {
+                rank_id = coordinate;
+              }
+            }
+            if (std::find(rank_ids.begin(), rank_ids.end(), rank_id) == rank_ids.end()) {
+              rank_ids.push_back(rank_id);
+            }
+          }
+        }
+      }
+
       if (opcode == "READ" || opcode == "WRITE") {
-        if (mode != Mode::SB) {
-          throw std::runtime_error(fmt::format("LPDDRPIMConcreteTrace: record {} {} requires SB mode", i, opcode));
+        for (int rank_id : rank_ids) {
+          if (rank_states[rank_id].mode != Mode::SB) {
+            throw std::runtime_error(fmt::format("LPDDRPIMConcreteTrace: record {} {} requires SB mode", i, opcode));
+          }
         }
         continue;
       }
       if (opcode == "SB") {
-        mode = Mode::SB;
-        saw_bcast_since_hab = false;
+        for (int rank_id : rank_ids) {
+          rank_states[rank_id].mode = Mode::SB;
+          rank_states[rank_id].saw_bcast_since_hab = false;
+        }
       } else if (opcode == "HAB") {
-        mode = Mode::HAB;
-        saw_bcast_since_hab = false;
+        for (int rank_id : rank_ids) {
+          rank_states[rank_id].mode = Mode::HAB;
+          rank_states[rank_id].saw_bcast_since_hab = false;
+        }
       } else if (opcode == "HAB_PIM") {
-        if (!saw_bcast_since_hab) {
-          throw std::runtime_error(fmt::format("LPDDRPIMConcreteTrace: record {} HAB_PIM requires a preceding PIM_BCAST in HAB mode", i));
+        for (int rank_id : rank_ids) {
+          if (!rank_states[rank_id].saw_bcast_since_hab) {
+            throw std::runtime_error(fmt::format("LPDDRPIMConcreteTrace: record {} HAB_PIM requires a preceding PIM_BCAST in HAB mode", i));
+          }
+          rank_states[rank_id].mode = Mode::HAB_PIM;
         }
-        mode = Mode::HAB_PIM;
       } else if (opcode == "PIM_BCAST") {
-        if (mode != Mode::HAB) {
-          throw std::runtime_error(fmt::format("LPDDRPIMConcreteTrace: record {} PIM_BCAST requires HAB mode", i));
+        for (int rank_id : rank_ids) {
+          if (rank_states[rank_id].mode != Mode::HAB) {
+            throw std::runtime_error(fmt::format("LPDDRPIMConcreteTrace: record {} PIM_BCAST requires HAB mode", i));
+          }
+          rank_states[rank_id].saw_bcast_since_hab = true;
         }
-        saw_bcast_since_hab = true;
       } else if (opcode == "PIM_MAC_AB") {
-        if (mode != Mode::HAB_PIM || !saw_bcast_since_hab) {
-          throw std::runtime_error(fmt::format("LPDDRPIMConcreteTrace: record {} PIM_MAC_AB requires HAB_PIM mode after PIM_BCAST", i));
+        for (int rank_id : rank_ids) {
+          if (rank_states[rank_id].mode != Mode::HAB_PIM ||
+              !rank_states[rank_id].saw_bcast_since_hab) {
+            throw std::runtime_error(fmt::format("LPDDRPIMConcreteTrace: record {} PIM_MAC_AB requires HAB_PIM mode after PIM_BCAST", i));
+          }
         }
       } else if (opcode == "PIM_MAC") {
-        if (mode != Mode::SB) {
-          throw std::runtime_error(fmt::format("LPDDRPIMConcreteTrace: record {} PIM_MAC requires SB mode", i));
+        for (int rank_id : rank_ids) {
+          if (rank_states[rank_id].mode != Mode::SB) {
+            throw std::runtime_error(fmt::format("LPDDRPIMConcreteTrace: record {} PIM_MAC requires SB mode", i));
+          }
         }
       }
     }

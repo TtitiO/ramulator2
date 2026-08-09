@@ -378,6 +378,8 @@ def lower_semantic_records_to_concrete(
         raise ValueError(
             f"synthetic_address_policy must be one of {sorted(SYNTHETIC_ADDRESS_POLICIES)}"
         )
+    rank_level: int | None = None
+    rank_count = 1
     if address_layout is not None:
         layout_names = list(address_layout.get("level_names", []))
         layout_size = len(layout_names)
@@ -385,6 +387,10 @@ def lower_semantic_records_to_concrete(
             raise ValueError(
                 f"address_layout level count {layout_size} must equal addr_vec_size {addr_vec_size}"
             )
+        rank_level = layout_names.index("Rank")
+        rank_count = int(address_layout["level_sizes"][rank_level])
+        if rank_count <= 0:
+            raise ValueError("address_layout Rank size must be positive")
         row_level = layout_names.index("Row")
         col_level = layout_names.index("Column")
         bank_level = layout_names.index("Bank")
@@ -394,8 +400,8 @@ def lower_semantic_records_to_concrete(
 
     records: list[dict] = []
     next_id = 0
-    mode = "SB"
-    all_bank_load_ready = False
+    rank_modes = ["SB"] * rank_count
+    rank_all_bank_load_ready = [False] * rank_count
 
     if mac_mode not in {"per_kind", "all_bank", "per_bank"}:
         raise ValueError(f"mac_mode must be 'per_kind', 'all_bank', or 'per_bank'; got {mac_mode!r}")
@@ -439,6 +445,101 @@ def lower_semantic_records_to_concrete(
         )
         next_id += 1
 
+    def rank_id_for(addr_vec: list[int]) -> int:
+        if rank_level is None:
+            return 0
+        rank_id = addr_vec[rank_level]
+        if isinstance(rank_id, bool) or not isinstance(rank_id, int):
+            raise ValueError("concrete rank coordinate must be an integer")
+        if rank_id < 0 or rank_id >= rank_count:
+            raise ValueError(f"concrete rank coordinate {rank_id} must be in [0, {rank_count})")
+        return rank_id
+
+    def rank_addr_vec(addr_vec: list[int], rank_id: int) -> list[int]:
+        result = list(addr_vec)
+        if rank_level is not None:
+            result[rank_level] = rank_id
+        return result
+
+    def transition_to_single_bank(
+        semantic_record: dict,
+        addr_vec: list[int],
+        *,
+        notes: str,
+    ) -> None:
+        rank_id = rank_id_for(addr_vec)
+        if rank_modes[rank_id] != "SB":
+            append("SB", semantic_record, addr_vec, notes=notes)
+            rank_modes[rank_id] = "SB"
+            rank_all_bank_load_ready[rank_id] = False
+
+    def transition_to_host_all_bank(
+        semantic_record: dict,
+        addr_vec: list[int],
+        *,
+        notes: str,
+    ) -> int:
+        rank_id = rank_id_for(addr_vec)
+        if rank_modes[rank_id] != "HAB":
+            append("HAB", semantic_record, addr_vec, notes=notes)
+            rank_modes[rank_id] = "HAB"
+            rank_all_bank_load_ready[rank_id] = False
+        return rank_id
+
+    def ensure_all_bank_load(
+        semantic_record: dict,
+        addr_vec: list[int],
+        *,
+        notes: str,
+    ) -> int:
+        rank_id = transition_to_host_all_bank(
+            semantic_record,
+            addr_vec,
+            notes="enter host all-bank mode before broadcast",
+        )
+        if not rank_all_bank_load_ready[rank_id]:
+            append("PIM_BCAST", semantic_record, addr_vec, notes=notes)
+            rank_all_bank_load_ready[rank_id] = True
+        return rank_id
+
+    def transition_to_pim_all_bank(
+        semantic_record: dict,
+        addr_vec: list[int],
+        *,
+        notes: str,
+    ) -> int:
+        rank_id = rank_id_for(addr_vec)
+        if rank_modes[rank_id] != "HAB_PIM":
+            if rank_modes[rank_id] != "HAB" or not rank_all_bank_load_ready[rank_id]:
+                raise ValueError("PIM all-bank mode requires a rank-local HAB and PIM_BCAST")
+            append("HAB_PIM", semantic_record, addr_vec, notes=notes)
+            rank_modes[rank_id] = "HAB_PIM"
+        return rank_id
+
+    def rank_for_flat_bank(flat_bank: int, base_addr_vec: list[int]) -> int:
+        if rank_level is None or bank_positions is None or bank_counts is None:
+            return rank_id_for(base_addr_vec)
+        total_banks = 1
+        for count in bank_counts:
+            total_banks *= int(count)
+        if flat_bank < 0 or flat_bank >= total_banks:
+            raise ValueError(f"flat bank index {flat_bank} must be in [0, {total_banks})")
+        remaining = flat_bank
+        rank_id = rank_id_for(base_addr_vec)
+        for position, count in zip(reversed(bank_positions), reversed(bank_counts), strict=True):
+            coordinate = remaining % int(count)
+            remaining //= int(count)
+            if position == rank_level:
+                rank_id = coordinate
+        return rank_id
+
+    def all_bank_target_ranks(
+        base_addr_vec: list[int], bank_sequence: list[int] | None
+    ) -> list[int]:
+        if bank_sequence:
+            return sorted({rank_for_flat_bank(int(bank), base_addr_vec) for bank in bank_sequence})
+        return list(range(rank_count))
+
     for semantic in semantic_records:
         kind = semantic.get("kind")
         if kind not in HOST_SEMANTIC_KINDS | PER_BANK_COMPUTE_SEMANTIC_KINDS | ALL_BANK_LOAD_SEMANTIC_KINDS | ALL_BANK_COMPUTE_SEMANTIC_KINDS:
@@ -446,10 +547,6 @@ def lower_semantic_records_to_concrete(
         if semantic.get("accounting_only"):
             continue
         if kind in HOST_SEMANTIC_KINDS:
-            if mode != "SB":
-                append("SB", semantic, [0] * addr_vec_size, notes=f"return to single-bank mode before semantic {kind} lowering")
-                mode = "SB"
-                all_bank_load_ready = False
             address_policy = dict(semantic.get("address_policy", {}))
             missing_policy = sorted({"base_byte", "stride_bytes", "count"} - set(address_policy))
             if missing_policy:
@@ -483,6 +580,11 @@ def lower_semantic_records_to_concrete(
                         addr_vec_size=addr_vec_size,
                         address_layout=address_layout,
                     )
+                    transition_to_single_bank(
+                        semantic,
+                        av,
+                        notes=f"return to single-bank mode before semantic {kind} lowering",
+                    )
                     extra_fields = {"addr_byte": chunk_base_byte}
                     if repeat_chunk > 1 and concrete_stride > 0:
                         extra_fields["addr_byte_stride"] = concrete_stride
@@ -507,10 +609,6 @@ def lower_semantic_records_to_concrete(
                         "synthetic weight materialization requires bounded_surrogate_v1; "
                         "it is not a literal physical placement map"
                     )
-                if mode != "SB":
-                    append("SB", semantic, [0] * addr_vec_size, notes="return to single-bank mode before host WRITE weight preload")
-                    mode = "SB"
-                    all_bank_load_ready = False
                 total_bytes = _pim_data_move_materialization_bytes(semantic)
                 tx_bytes = _pim_data_move_tx_bytes(semantic)
                 count = max(1, (total_bytes + tx_bytes - 1) // tx_bytes)
@@ -533,6 +631,11 @@ def lower_semantic_records_to_concrete(
                             chunk_base_byte,
                             addr_vec_size=addr_vec_size,
                             address_layout=address_layout,
+                        )
+                        transition_to_single_bank(
+                            semantic,
+                            av,
+                            notes="return to single-bank mode before host WRITE weight preload",
                         )
                         extra_fields = {"addr_byte": chunk_base_byte}
                         if repeat_chunk > 1 and concrete_stride > 0:
@@ -569,45 +672,65 @@ def lower_semantic_records_to_concrete(
             bank_len = max(1, len(bank_seq))
 
             if interleave_banks and bank_len > 1 and resolve_mac_mode(kind) == "all_bank":
-                # All-bank broadcast path: HAB → PIM_BCAST → HAB_PIM → PIM_MAC_AB×n → SB
-                # Work conservation: per-bank scheme spreads total_per_request MACs
-                # across bank_len banks, each doing ceil(total/bank_len) MACs.
-                # One PIM_MAC_AB performs one MAC on every bank simultaneously,
-                # so n_ab = ceil(total_per_request / bank_len) conserves arithmetic.
-                n_ab = (total_per_request + bank_len - 1) // bank_len
-                if n_ab < 1:
-                    n_ab = 1
-                if mode != "HAB":
-                    append("HAB", semantic, base_av, notes="enter host all-bank mode for all-bank MAC lowering")
-                    mode = "HAB"
-                    all_bank_load_ready = False
-                if not all_bank_load_ready:
-                    append("PIM_BCAST", semantic, base_av, notes="bounded all-bank load before all-bank MAC lowering")
-                    all_bank_load_ready = True
-                append("HAB_PIM", semantic, base_av, notes="enter PIM all-bank mode for all-bank MAC lowering")
-                remaining = n_ab
-                split_index = 0
-                while remaining > 0:
-                    repeat_chunk = min(max_repeat_per_record, remaining)
-                    notes = (
-                        f"semantic {kind} lowered to all-bank PIM_MAC_AB"
-                        if remaining <= max_repeat_per_record
-                        else f"semantic {kind} lowered to all-bank PIM_MAC_AB split {split_index + 1}"
+                # All-bank commands are rank-scoped. A semantic operation that
+                # spans a multi-rank hierarchy therefore lowers into one
+                # explicit HAB → PIM_BCAST → HAB_PIM → PIM_MAC_AB sequence per
+                # configured rank; it must never silently execute only at rank
+                # zero. ``n_ab`` is normalized by the full semantic bank span,
+                # so each rank-local all-bank issue conserves the per-bank
+                # arithmetic represented by the original round-robin stream.
+                n_ab = max(1, (total_per_request + bank_len - 1) // bank_len)
+                for rank_id in all_bank_target_ranks(base_av, bank_seq):
+                    av = rank_addr_vec(base_av, rank_id)
+                    ensure_all_bank_load(
+                        semantic,
+                        av,
+                        notes="bounded rank-local load before all-bank MAC lowering",
                     )
-                    append("PIM_MAC_AB", semantic, base_av, repeat=repeat_chunk, notes=notes)
-                    remaining -= repeat_chunk
-                    split_index += 1
-                append("SB", semantic, base_av, notes="return to single-bank mode after all-bank MAC lowering")
-                mode = "SB"
-                all_bank_load_ready = False
+                    transition_to_pim_all_bank(
+                        semantic,
+                        av,
+                        notes="enter rank-local PIM all-bank mode for all-bank MAC lowering",
+                    )
+                    remaining = n_ab
+                    split_index = 0
+                    while remaining > 0:
+                        repeat_chunk = min(max_repeat_per_record, remaining)
+                        notes = (
+                            f"semantic {kind} lowered to rank-local all-bank PIM_MAC_AB"
+                            if remaining <= max_repeat_per_record
+                            else f"semantic {kind} lowered to rank-local all-bank PIM_MAC_AB "
+                            f"split {split_index + 1}"
+                        )
+                        append("PIM_MAC_AB", semantic, av, repeat=repeat_chunk, notes=notes)
+                        remaining -= repeat_chunk
+                        split_index += 1
+                    append(
+                        "SB",
+                        semantic,
+                        av,
+                        notes="return rank to single-bank mode after all-bank MAC lowering",
+                    )
+                    rank_modes[rank_id] = "SB"
+                    rank_all_bank_load_ready[rank_id] = False
             else:
-                # Per-bank path (serial or interleaved compact PIM_MAC)
-                if mode != "SB":
-                    append("SB", semantic, base_av, notes="return to single-bank mode before per-bank PIM_MAC lowering")
-                    mode = "SB"
-                    all_bank_load_ready = False
-                elif not records:
-                    append("SB", semantic, base_av, notes="enter single-bank mode for semantic PIMCompute lowering")
+                # Per-bank path (serial or interleaved compact PIM_MAC). A
+                # compact bank sequence can span ranks, so every represented
+                # rank must independently be in single-bank mode.
+                target_ranks = all_bank_target_ranks(base_av, bank_seq)
+                for rank_id in target_ranks:
+                    transition_to_single_bank(
+                        semantic,
+                        rank_addr_vec(base_av, rank_id),
+                        notes="return rank to single-bank mode before per-bank PIM_MAC lowering",
+                    )
+                if not records:
+                    append(
+                        "SB",
+                        semantic,
+                        base_av,
+                        notes="enter single-bank mode for semantic PIMCompute lowering",
+                    )
 
                 if interleave_banks and bank_len > 1:
                     # Emit ONE compact PIM_MAC record per compute group with
@@ -678,6 +801,14 @@ def lower_semantic_records_to_concrete(
                             row_level=row_level,
                             col_level=col_level,
                         )
+                        transition_to_single_bank(
+                            semantic,
+                            av,
+                            notes=(
+                                "return rank to single-bank mode before per-bank "
+                                "PIM_MAC lowering"
+                            ),
+                        )
                         repeat_chunks = _split_repeat(per_bank_total)
                         for split_index, repeat_chunk in enumerate(repeat_chunks):
                             notes = (
@@ -686,7 +817,6 @@ def lower_semantic_records_to_concrete(
                                 else f"semantic {kind} lowered to concrete PIM_MAC split {split_index + 1}/{len(repeat_chunks)}"
                             )
                             append("PIM_MAC", semantic, av, repeat=repeat_chunk, notes=notes)
-            mode = "SB"
         elif kind in ALL_BANK_LOAD_SEMANTIC_KINDS:
             if kind == "PIMDataMove":
                 movement_kind = dict(semantic.get("movement_policy", {})).get("movement_kind")
@@ -697,22 +827,27 @@ def lower_semantic_records_to_concrete(
                         f"Semantic record {semantic.get('record_id')} PIMDataMove movement_kind {movement_kind!r} "
                         "is not supported by native PIM_BCAST lowering"
                     )
-            if mode != "HAB":
-                append("HAB", semantic, base_av, notes=f"enter host all-bank mode for semantic {kind} lowering")
-                mode = "HAB"
             total_repeat = num_requests * semantic_repeat
             repeat_chunks = _split_repeat(total_repeat)
-            for split_index, repeat_chunk in enumerate(repeat_chunks):
-                notes = (
-                    f"semantic {kind} lowered to concrete PIM_BCAST"
-                    if len(repeat_chunks) == 1
-                    else f"semantic {kind} lowered to concrete PIM_BCAST split {split_index + 1}/{len(repeat_chunks)}"
+            for rank_id in range(rank_count):
+                av = rank_addr_vec(base_av, rank_id)
+                transition_to_host_all_bank(
+                    semantic,
+                    av,
+                    notes=f"enter rank-local host all-bank mode for semantic {kind} lowering",
                 )
-                append("PIM_BCAST", semantic, base_av, repeat=repeat_chunk, notes=notes)
-            all_bank_load_ready = True
+                for split_index, repeat_chunk in enumerate(repeat_chunks):
+                    notes = (
+                        f"semantic {kind} lowered to rank-local PIM_BCAST"
+                        if len(repeat_chunks) == 1
+                        else f"semantic {kind} lowered to rank-local PIM_BCAST "
+                        f"split {split_index + 1}/{len(repeat_chunks)}"
+                    )
+                    append("PIM_BCAST", semantic, av, repeat=repeat_chunk, notes=notes)
+                rank_all_bank_load_ready[rank_id] = True
         elif kind in ALL_BANK_COMPUTE_SEMANTIC_KINDS:
             for request_index in range(num_requests * semantic_repeat):
-                av = _addr_vec_from_semantic(
+                base_request_av = _addr_vec_from_semantic(
                     semantic,
                     request_index % num_requests,
                     addr_vec_size=addr_vec_size,
@@ -722,18 +857,35 @@ def lower_semantic_records_to_concrete(
                     row_level=row_level,
                     col_level=col_level,
                 )
-                if mode != "HAB":
-                    append("HAB", semantic, av, notes="enter host all-bank mode before all-bank compute lowering")
-                    mode = "HAB"
-                    all_bank_load_ready = False
-                if not all_bank_load_ready:
-                    append("PIM_BCAST", semantic, av, notes="bounded all-bank load before semantic PIMComputeAll lowering")
-                    all_bank_load_ready = True
-                append("HAB_PIM", semantic, av, notes="enter PIM all-bank mode for semantic PIMComputeAll lowering")
-                append("PIM_MAC_AB", semantic, av, notes="semantic PIMComputeAll lowered to concrete PIM_MAC_AB")
-                append("SB", semantic, av, notes="return to single-bank mode after all-bank compute lowering")
-                mode = "SB"
-                all_bank_load_ready = False
+                for rank_id in range(rank_count):
+                    av = rank_addr_vec(base_request_av, rank_id)
+                    ensure_all_bank_load(
+                        semantic,
+                        av,
+                        notes="bounded rank-local load before semantic PIMComputeAll lowering",
+                    )
+                    transition_to_pim_all_bank(
+                        semantic,
+                        av,
+                        notes=(
+                            "enter rank-local PIM all-bank mode for semantic "
+                            "PIMComputeAll lowering"
+                        ),
+                    )
+                    append(
+                        "PIM_MAC_AB",
+                        semantic,
+                        av,
+                        notes="semantic PIMComputeAll lowered to rank-local PIM_MAC_AB",
+                    )
+                    append(
+                        "SB",
+                        semantic,
+                        av,
+                        notes="return rank to single-bank mode after all-bank compute lowering",
+                    )
+                    rank_modes[rank_id] = "SB"
+                    rank_all_bank_load_ready[rank_id] = False
 
     validate_sequence(
         records,

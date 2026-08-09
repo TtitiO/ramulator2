@@ -28,10 +28,22 @@ def test_lpddr6_capability_is_declared_but_not_advertised_as_pim():
     assert capabilities["LPDDR5PIM"]["status"] == "supported"
     assert capabilities["LPDDR6PIM"]["status"] == "experimental"
     assert capabilities["LPDDR6PIM"]["available_base_dram_model"]
+    assert capabilities["LPDDR6PIM"]["validated_rank_counts"] == [1, 2]
+    assert capabilities["LPDDR6PIM"]["validated_topology"] == {
+        "controllers": 1,
+        "channels": 1,
+    }
 
     raw = _manifest()
     raw["hardware"]["dram_class"] = "LPDDR6"
     with pytest.raises(ValueError, match=r"generic LPDDR6.*select LPDDR6PIM explicitly"):
+        resolve_experiment_manifest(raw, source="test")
+
+
+def test_unvalidated_rank_count_is_rejected_by_public_manifest():
+    raw = _manifest()
+    raw["hardware"]["org_overrides"] = {"rank": 3}
+    with pytest.raises(ValueError, match=r"hardware\.org_overrides\.rank.*one- and two-rank"):
         resolve_experiment_manifest(raw, source="test")
 
 

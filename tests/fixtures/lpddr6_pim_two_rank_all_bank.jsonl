@@ -1,0 +1,11 @@
+{"dram_class":"LPDDR6PIM","schema_version":"lpddr6-pim-opcode-v0.1"}
+{"addr_vec":[0,0,0,0,0,0],"opcode":"HAB","repeat":1}
+{"addr_vec":[0,1,0,0,0,0],"opcode":"HAB","repeat":1}
+{"addr_vec":[0,0,0,0,0,0],"opcode":"PIM_BCAST","repeat":1}
+{"addr_vec":[0,1,0,0,0,0],"opcode":"PIM_BCAST","repeat":1}
+{"addr_vec":[0,0,0,0,0,0],"opcode":"HAB_PIM","repeat":1}
+{"addr_vec":[0,1,0,0,0,0],"opcode":"HAB_PIM","repeat":1}
+{"addr_vec":[0,0,0,0,0,0],"opcode":"PIM_MAC_AB","repeat":1}
+{"addr_vec":[0,0,0,0,0,0],"opcode":"SB","repeat":1}
+{"addr_vec":[0,1,0,0,0,0],"opcode":"PIM_MAC_AB","repeat":1}
+{"addr_vec":[0,1,0,0,0,0],"opcode":"SB","repeat":1}

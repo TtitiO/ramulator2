@@ -330,14 +330,51 @@ def validate_record(record: dict, *, address_layout: Mapping[str, Any] | None = 
 
 
 
+def _record_rank_ids(
+    record: dict, address_layout: Mapping[str, Any] | None
+) -> set[int]:
+    """Return every rank touched by a concrete record.
+
+    Compact interleaved PIM_MAC records can expand across ranks even though
+    their base ``addr_vec`` contains only one coordinate. Sequence validation
+    must therefore inspect the flattened bank sequence rather than validating
+    only the base vector. The index-1 fallback preserves validation for legacy
+    in-memory records without a layout while retaining the canonical
+    Channel/Rank prefix required by this trace format.
+    """
+    if address_layout is None:
+        rank_level = 1
+    else:
+        level_names = list(address_layout["level_names"])
+        rank_level = level_names.index("Rank")
+    ranks = {int(record["addr_vec"][rank_level])}
+    if record["opcode"] != "PIM_MAC" or not record.get("bank_sequence"):
+        return ranks
+
+    positions = list(record.get("bank_positions", []))
+    counts = list(record.get("bank_counts", []))
+    if rank_level not in positions:
+        return ranks
+    rank_position_index = positions.index(rank_level)
+    ranks.clear()
+    for flat_bank in record["bank_sequence"]:
+        remaining = int(flat_bank)
+        coordinates = [0] * len(positions)
+        for index in range(len(positions) - 1, -1, -1):
+            coordinates[index] = remaining % int(counts[index])
+            remaining //= int(counts[index])
+        ranks.add(coordinates[rank_position_index])
+    return ranks
+
+
 def validate_sequence(
     records: list[dict],
     *,
     address_layout: Mapping[str, Any] | None = None,
     max_expanded_records: int | None = None,
 ) -> None:
-    mode = "SB"
-    saw_bcast_since_hab = False
+    rank_modes: dict[int, str] = {}
+    rank_bcasts: dict[int, bool] = {}
     expanded_records = 0
     if max_expanded_records is None:
         max_expanded_records = int(os.environ.get(MAX_EXPANDED_RECORDS_ENV, MAX_EXPANDED_RECORDS))
@@ -354,35 +391,44 @@ def validate_sequence(
                 f"{max_expanded_records}"
             )
         opcode = record["opcode"]
+        rank_ids = _record_rank_ids(record, address_layout)
         if opcode in {"READ", "WRITE"}:
-            if mode != "SB":
+            if any(rank_modes.get(rank_id, "SB") != "SB" for rank_id in rank_ids):
                 raise ValueError(f"Concrete opcode record {index} {opcode} requires SB mode")
             continue
         if opcode == "SB":
-            mode = "SB"
-            saw_bcast_since_hab = False
+            for rank_id in rank_ids:
+                rank_modes[rank_id] = "SB"
+                rank_bcasts[rank_id] = False
         elif opcode == "HAB":
-            mode = "HAB"
-            saw_bcast_since_hab = False
+            for rank_id in rank_ids:
+                rank_modes[rank_id] = "HAB"
+                rank_bcasts[rank_id] = False
         elif opcode == "HAB_PIM":
-            if not saw_bcast_since_hab:
+            if any(not rank_bcasts.get(rank_id, False) for rank_id in rank_ids):
                 raise ValueError(
                     f"Concrete opcode record {index} HAB_PIM requires a preceding "
                     "PIM_BCAST in HAB mode"
                 )
-            mode = "HAB_PIM"
+            for rank_id in rank_ids:
+                rank_modes[rank_id] = "HAB_PIM"
         elif opcode == "PIM_BCAST":
-            if mode != "HAB":
+            if any(rank_modes.get(rank_id, "SB") != "HAB" for rank_id in rank_ids):
                 raise ValueError(f"Concrete opcode record {index} PIM_BCAST requires HAB mode")
-            saw_bcast_since_hab = True
+            for rank_id in rank_ids:
+                rank_bcasts[rank_id] = True
         elif opcode == "PIM_MAC_AB":
-            if mode != "HAB_PIM" or not saw_bcast_since_hab:
+            if any(
+                rank_modes.get(rank_id, "SB") != "HAB_PIM"
+                or not rank_bcasts.get(rank_id, False)
+                for rank_id in rank_ids
+            ):
                 raise ValueError(
                     f"Concrete opcode record {index} PIM_MAC_AB requires HAB_PIM "
                     "mode after PIM_BCAST"
                 )
         elif opcode == "PIM_MAC":
-            if mode != "SB":
+            if any(rank_modes.get(rank_id, "SB") != "SB" for rank_id in rank_ids):
                 raise ValueError(f"Concrete opcode record {index} PIM_MAC requires SB mode")
 
 

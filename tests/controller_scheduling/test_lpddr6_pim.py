@@ -93,6 +93,39 @@ def test_lpddr6_pim_shared_block_serialization_is_preserved():
     assert dut.stats()["pim_shared_block_stalls"] > 0
 
 
+def test_lpddr6_pim_shared_blocks_do_not_cross_rank_boundaries():
+    dut = make_dut(rank=2, pim_blocks_per_bank=1, pim_banks_per_block=4)
+    rank0 = dut.addr_vec(Rank=0, BankGroup=0, Bank=0, Row=9, Column=0)
+    rank1 = dut.addr_vec(Rank=1, BankGroup=0, Bank=0, Row=9, Column=0)
+    dut.send_request("PIMCompute", rank0)
+    dut.send_request("PIMCompute", rank1)
+
+    history = run_until_command(dut, "PIM_MAC", count=2, max_ticks=512)
+    macs = [item for item in history if item.command == "PIM_MAC"]
+    rank_index = dut.level_names.index("Rank")
+
+    assert [item.addr_vec[rank_index] for item in macs] == [0, 1]
+    assert macs[1].clk - macs[0].clk < dut.timings["nPIM_MAC_LAT"] + 1
+    assert dut.stats()["pim_shared_block_stalls"] == 0
+    assert dut.stats()["pim_shared_block_count"] == 8
+    assert dut.stats()["total_banks"] == 32
+
+
+def test_lpddr6_pim_rank_mode_does_not_block_host_traffic_to_another_rank():
+    dut = make_dut(rank=2)
+    rank0_all = dut.addr_vec(Rank=0, BankGroup=dut.ALL, Bank=dut.ALL, Row=0, Column=0)
+    rank1_host = dut.addr_vec(Rank=1, BankGroup=0, Bank=0, Row=4, Column=0)
+
+    dut.priority_send("HAB", rank0_all)
+    history = dut.tick()
+    dut.send_request("Read", rank1_host)
+    history.extend(dut.run_until_idle(max_ticks=512))
+
+    rank_index = dut.level_names.index("Rank")
+    assert [item.command for item in history] == ["HAB", "ACT1", "ACT2", "CAS", "RD_S"]
+    assert all(item.addr_vec[rank_index] == 1 for item in history[1:])
+
+
 def test_lpddr6_pim_all_bank_commands_use_rank_scope():
     dut = make_dut()
     address = dut.addr_vec(Rank=0, BankGroup=0, Bank=0, Row=0, Column=0)

@@ -352,6 +352,11 @@ def _resolve_hardware(raw: Any) -> dict[str, Any]:
             _nonnegative_number(pim[field], f"hardware.pim.{field}")
     for field, value in hardware["org_overrides"].items():
         _positive_int(value, f"hardware.org_overrides.{field}")
+    if hardware["org_overrides"].get("rank", 1) not in {1, 2}:
+        _fail(
+            "hardware.org_overrides.rank",
+            "only one- and two-rank organizations are currently validated",
+        )
     for field, value in hardware["timing_overrides"].items():
         _nonnegative_number(value, f"hardware.timing_overrides.{field}")
     return hardware

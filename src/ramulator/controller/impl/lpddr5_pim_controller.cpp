@@ -44,6 +44,11 @@ class LPDDRPIMController : public ControllerBase {
     SubbankOverlapExperimental,
   };
 
+  struct PIMRankState {
+    PIMRankMode mode = PIMRankMode::SingleBank;
+    bool all_bank_load_ready = false;
+  };
+
   ReqBuffer m_activating_buffer;
   int m_cmd_act1 = -1;
   int m_cmd_act2 = -1;
@@ -91,9 +96,9 @@ class LPDDRPIMController : public ControllerBase {
   int m_pim_movement_cycles = 1;
   int m_pim_writeback_cycles = 0;
   int m_pim_completion_latency_cycles = 0;
-  PIMRankMode m_pim_rank_mode = PIMRankMode::SingleBank;
-  bool m_pim_all_bank_load_ready = false;
+  std::vector<PIMRankState> m_pim_rank_states;
   bool m_pim_ab_inflight = false;
+  int m_pim_ab_rank_id = -1;
   Clk_t m_pim_ab_start_clk = -1;
   Clk_t m_pim_ab_done_clk = -1;
   Request m_pim_ab_request;
@@ -178,6 +183,9 @@ class LPDDRPIMController : public ControllerBase {
 
   bool is_access_cmd(int cmd) const;
   bool is_read_cmd(int cmd) const;
+  int get_rank_id(const AddrVec_t& addr_vec) const;
+  PIMRankState& get_pim_rank_state(const AddrVec_t& addr_vec);
+  const PIMRankState& get_pim_rank_state(const AddrVec_t& addr_vec) const;
   void extend_wck_expiry(int cmd);
 
   bool cas_would_block_deadline() const;
@@ -250,6 +258,11 @@ void LPDDRPIMController::init() {
   }
   m_rank_level = spec.get_level_id("Rank");
   m_bank_level = spec.get_level_id("Bank");
+  const int rank_count = spec.organization.level_sizes[m_rank_level];
+  if (rank_count <= 0) {
+    throw std::runtime_error("LPDDRPIMController: rank count must be positive");
+  }
+  m_pim_rank_states.assign(rank_count, {});
   m_pim_banks_per_rank = 1;
   for (int level = m_rank_level + 1; level <= m_bank_level; level++) {
     m_pim_banks_per_rank *= spec.organization.level_sizes[level];
@@ -573,11 +586,35 @@ bool LPDDRPIMController::is_read_cmd(int cmd) const {
   return cmd == m_cmd_rd || cmd == m_cmd_rda || cmd == m_cmd_rd_l || cmd == m_cmd_rda_l;
 }
 
+int LPDDRPIMController::get_rank_id(const AddrVec_t& addr_vec) const {
+  if (m_rank_level < 0 || m_rank_level >= static_cast<int>(addr_vec.size())) {
+    throw std::runtime_error("LPDDRPIMController: request address is missing Rank");
+  }
+  const int rank_id = addr_vec[m_rank_level];
+  if (rank_id < 0 || rank_id >= static_cast<int>(m_pim_rank_states.size())) {
+    throw std::runtime_error(fmt::format(
+        "LPDDRPIMController: request Rank {} is outside [0, {})",
+        rank_id,
+        m_pim_rank_states.size()));
+  }
+  return rank_id;
+}
+
+LPDDRPIMController::PIMRankState& LPDDRPIMController::get_pim_rank_state(
+    const AddrVec_t& addr_vec) {
+  return m_pim_rank_states[get_rank_id(addr_vec)];
+}
+
+const LPDDRPIMController::PIMRankState& LPDDRPIMController::get_pim_rank_state(
+    const AddrVec_t& addr_vec) const {
+  return m_pim_rank_states[get_rank_id(addr_vec)];
+}
+
 bool LPDDRPIMController::would_block_host_request(const Request& req) const {
   if (req.type_id != Request::Type::Read && req.type_id != Request::Type::Write) {
     return false;
   }
-  return m_pim_rank_mode != PIMRankMode::SingleBank;
+  return get_pim_rank_state(req.addr_vec).mode != PIMRankMode::SingleBank;
 }
 
 void LPDDRPIMController::extend_wck_expiry(int cmd) {
@@ -703,11 +740,27 @@ void LPDDRPIMController::account_blocked_pim_cycle() {
 }
 
 bool LPDDRPIMController::would_block_pim_launch(const Request& req) {
+  const bool is_rank_mode_command =
+      req.final_command == m_cmd_sb || req.final_command == m_cmd_hab ||
+      req.final_command == m_cmd_hab_pim || req.final_command == m_cmd_pim_bcast;
+  const bool is_pim_request = is_rank_mode_command || req.final_command == m_cmd_pim_mac ||
+                              req.final_command == m_cmd_pim_mac_ab;
+  if (!is_pim_request) {
+    return false;
+  }
+
+  const int rank_id = get_rank_id(req.addr_vec);
+  PIMRankState& rank_state = m_pim_rank_states[rank_id];
+  if (m_pim_ab_inflight && rank_id == m_pim_ab_rank_id && is_rank_mode_command) {
+    s_pim_mode_stalls++;
+    return true;
+  }
+
   if (req.final_command == m_cmd_pim_bcast) {
     if (req.command == m_cmd_hab) {
       return false;
     }
-    if (m_pim_rank_mode != PIMRankMode::HostAllBank) {
+    if (rank_state.mode != PIMRankMode::HostAllBank) {
       s_pim_mode_stalls++;
       return true;
     }
@@ -718,11 +771,11 @@ bool LPDDRPIMController::would_block_pim_launch(const Request& req) {
     if (req.command == m_cmd_hab_pim) {
       return false;
     }
-    if (m_pim_rank_mode != PIMRankMode::PIMAllBank) {
+    if (rank_state.mode != PIMRankMode::PIMAllBank) {
       s_pim_mode_stalls++;
       return true;
     }
-    if (!m_pim_all_bank_load_ready) {
+    if (!rank_state.all_bank_load_ready) {
       s_pim_load_stalls++;
       return true;
     }
@@ -735,6 +788,10 @@ bool LPDDRPIMController::would_block_pim_launch(const Request& req) {
 
   if (req.final_command != m_cmd_pim_mac || req.command != m_cmd_pim_mac) {
     return false;
+  }
+  if (rank_state.mode != PIMRankMode::SingleBank) {
+    s_pim_mode_stalls++;
+    return true;
   }
 
   int flat_bank_id = m_device.get_flat_bank_id(req.addr_vec);
@@ -837,6 +894,7 @@ void LPDDRPIMController::update_pim_observability() {
 
 void LPDDRPIMController::complete_pim_if_ready() {
   if (m_pim_ab_inflight && m_pim_ab_done_clk <= m_clk) {
+    assert(m_pim_ab_rank_id >= 0);
     m_pim_ab_request.depart = m_pim_ab_done_clk;
     const Clk_t service_latency = m_pim_ab_done_clk - m_pim_ab_start_clk;
     const Clk_t launch_wait = m_pim_ab_start_clk - m_pim_ab_request.arrive;
@@ -862,10 +920,11 @@ void LPDDRPIMController::complete_pim_if_ready() {
     // lowering emit one PIM_BCAST per compute group instead of one per MAC.
     // The reference per-MAC PIMComputeAll sequence is unaffected: its
     // intervening HAB re-clears the flag before the next broadcast.
-    m_pim_all_bank_load_ready = true;
+    m_pim_rank_states[m_pim_ab_rank_id].all_bank_load_ready = true;
+    m_pim_ab_rank_id = -1;
     s_pim_simultaneous_active_banks_peak = std::max(
         s_pim_simultaneous_active_banks_peak,
-        static_cast<size_t>(m_device.m_bank_nodes.size()));
+        static_cast<size_t>(m_pim_banks_per_rank));
   }
 
   for (int flat_bank_id = 0; flat_bank_id < static_cast<int>(m_inflight_pim.size()); flat_bank_id++) {
@@ -899,28 +958,32 @@ void LPDDRPIMController::complete_pim_if_ready() {
 }
 
 void LPDDRPIMController::handle_mode_or_bcast_completion(Request& req) {
+  PIMRankState& rank_state = get_pim_rank_state(req.addr_vec);
   if (req.command == m_cmd_sb) {
-    m_pim_rank_mode = PIMRankMode::SingleBank;
+    rank_state.mode = PIMRankMode::SingleBank;
+    rank_state.all_bank_load_ready = false;
   } else if (req.command == m_cmd_hab) {
-    m_pim_rank_mode = PIMRankMode::HostAllBank;
-    m_pim_all_bank_load_ready = false;
+    rank_state.mode = PIMRankMode::HostAllBank;
+    rank_state.all_bank_load_ready = false;
   } else if (req.command == m_cmd_hab_pim) {
-    m_pim_rank_mode = PIMRankMode::PIMAllBank;
+    rank_state.mode = PIMRankMode::PIMAllBank;
   } else if (req.command == m_cmd_pim_bcast) {
     // Bounded sequencing token: PIM_BCAST represents a completed all-bank
     // setup/broadcast in this backend, not a silicon-faithful proof of a
     // distinct LPDDR5 command or exact payload-source/timing path.
-    m_pim_all_bank_load_ready = true;
+    rank_state.all_bank_load_ready = true;
   }
 }
 
 void LPDDRPIMController::launch_inflight_pim_ab(Candidate cand) {
   assert(cand.it->final_command == m_cmd_pim_mac_ab);
   assert(!m_pim_ab_inflight);
-  assert(m_pim_all_bank_load_ready);
+  PIMRankState& rank_state = get_pim_rank_state(cand.it->addr_vec);
+  assert(rank_state.all_bank_load_ready);
 
   m_pim_ab_request = *cand.it;
   m_pim_ab_request.depart = -1;
+  m_pim_ab_rank_id = get_rank_id(m_pim_ab_request.addr_vec);
   m_pim_ab_start_clk = m_clk;
   // k1 (pim_banks_per_block=1): every bank has a dedicated CU -> all banks compute
   //   in parallel in one MAC pipeline pass -> latency = completion_latency.
@@ -930,14 +993,20 @@ void LPDDRPIMController::launch_inflight_pim_ab(Candidate cand) {
   Clk_t ab_latency = s_pim_ab_completion_latency_cycles;
   m_pim_ab_done_clk = m_clk + ab_latency;
   m_pim_ab_inflight = true;
-  m_pim_all_bank_load_ready = false;
+  rank_state.all_bank_load_ready = false;
   s_num_issued_pim_mac_ab++;
   s_pim_ab_inflight_peak = std::max(s_pim_ab_inflight_peak, static_cast<size_t>(1));
-  s_pim_inflight_peak = std::max(s_pim_inflight_peak, static_cast<size_t>(m_device.m_bank_nodes.size()));
+  s_pim_inflight_peak = std::max(
+      s_pim_inflight_peak,
+      static_cast<size_t>(m_pim_banks_per_rank));
   s_pim_simultaneous_active_banks_peak = std::max(
       s_pim_simultaneous_active_banks_peak,
-      static_cast<size_t>(m_device.m_bank_nodes.size()));
-  for (int flat_bank_id = 0; flat_bank_id < kObservedPimBanks; flat_bank_id++) {
+      static_cast<size_t>(m_pim_banks_per_rank));
+  const int rank_bank_begin = m_pim_ab_rank_id * m_pim_banks_per_rank;
+  const int rank_bank_end = rank_bank_begin + m_pim_banks_per_rank;
+  for (int flat_bank_id = rank_bank_begin;
+       flat_bank_id < std::min(rank_bank_end, kObservedPimBanks);
+       flat_bank_id++) {
     s_pim_launches_per_bank[flat_bank_id]++;
     s_pim_inflight_peak_per_bank[flat_bank_id] = std::max(
         s_pim_inflight_peak_per_bank[flat_bank_id],
