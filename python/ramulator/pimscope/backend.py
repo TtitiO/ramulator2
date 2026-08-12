@@ -1,17 +1,21 @@
-"""Reusable LPDDR5-PIM construction, lowering, and replay APIs.
-
-Paper-specific experiment matrices and artifact aggregation remain in the
-parent PIMScope repository; this module owns simulator-facing operations.
-"""
-
-from __future__ import annotations
+"""Construct, lower, and replay LPDDR-PIM experiments."""
 
 import tempfile
 from collections import Counter
 from pathlib import Path
 
 from ramulator.dram.addressing import concrete_address_layout, extract_dram_layout
+from ramulator.dram.lpddr5_pim import (
+    PAPER_LPDDR5_POWER_PROFILE_NAME,
+    PAPER_LPDDR5_POWER_PROVENANCE,
+    PAPER_LPDDR5_POWER_UNITS,
+)
+from ramulator.dram.lpddr5_pim import (
+    PIM_DATATYPE_RESOURCES as LPDDR5_PIM_DATATYPE_RESOURCES,
+)
+from ramulator.dram.lpddr6_pim import PIM_DATATYPE_RESOURCES as LPDDR6_PIM_DATATYPE_RESOURCES
 from ramulator.pimscope.config import ResolvedExperiment
+from ramulator.workload_surrogate.lpddr5_pim_concrete_trace import CONCRETE_SCHEMA_VERSIONS
 
 LPDDR5_PIM_CONFIG = {
     "dram_class": "LPDDR5PIM",
@@ -41,7 +45,12 @@ def create_dram(cfg: dict | None = None, *, dram_kwargs_overrides: dict | None =
     dram_kwargs = dict(cfg.get("dram_kwargs", {}))
     if dram_kwargs_overrides:
         dram_kwargs.update(dram_kwargs_overrides)
-    return ramulator.dram.LPDDR5PIM(
+    dram_class = cfg.get("dram_class", "LPDDR5PIM")
+    try:
+        dram_type = getattr(ramulator.dram, dram_class)
+    except AttributeError as exc:
+        raise ValueError(f"Ramulator DRAM class {dram_class!r} is not available") from exc
+    return dram_type(
         org_preset=cfg["org_preset"],
         timing_preset=cfg["timing_preset"],
         **dram_kwargs,
@@ -118,16 +127,31 @@ def create_concrete_frontend(
         kwargs["max_trace_bytes"] = max_trace_bytes
     if max_expanded_records is not None:
         kwargs["max_expanded_records"] = max_expanded_records
-    return ramulator.frontend.LPDDR5PIMConcreteTrace(**kwargs)
+    dram_class = type(dram).__name__
+    frontend_name = {
+        "LPDDR5PIM": "LPDDR5PIMConcreteTrace",
+        "LPDDR6PIM": "LPDDR6PIMConcreteTrace",
+    }.get(dram_class)
+    if frontend_name is None:
+        raise ValueError(f"No concrete PIM frontend is declared for DRAM {dram_class}")
+    kwargs["expected_schema_version"] = CONCRETE_SCHEMA_VERSIONS[dram_class]
+    kwargs["expected_dram_class"] = dram_class
+    return getattr(ramulator.frontend, frontend_name)(**kwargs)
 
 
-def create_memory_system(dram, cfg: dict | None = None):
+def create_memory_system(dram, cfg: dict | None = None, *, controller_plugins=None):
     import ramulator
 
     cfg = cfg or LPDDR5_PIM_CONFIG
     controller_cfg = cfg.get("controller", {})
     memory_cfg = cfg.get("memory_system", {})
-    ctrl = ramulator.controller.LPDDR5PIM(
+    controller_name = {
+        "LPDDR5PIM": "LPDDR5PIM",
+        "LPDDR6PIM": "LPDDR6PIM",
+    }.get(type(dram).__name__)
+    if controller_name is None:
+        raise ValueError(f"No PIM controller is declared for DRAM {type(dram).__name__}")
+    ctrl = getattr(ramulator.controller, controller_name)(
         dram=dram,
         scheduler=_component(ramulator.scheduler, controller_cfg.get("scheduler", "FRFCFS")),
         refresh_manager=_component(
@@ -137,6 +161,7 @@ def create_memory_system(dram, cfg: dict | None = None):
         addr_mapper=create_address_mapper(
             ramulator, controller_cfg.get("addr_mapper", "PassThroughAddrMapper")
         ),
+        controller_plugins=list(controller_plugins or []),
     )
     channel_mapper_name = memory_cfg.get("channel_mapper", "CacheLineInterleave")
     return ramulator.memory_system.GenericDRAM(
@@ -144,6 +169,95 @@ def create_memory_system(dram, cfg: dict | None = None):
         controllers=[ctrl],
         channel_mapper=_component(ramulator.channel_mapper, channel_mapper_name),
     )
+
+
+def _finite_nonnegative_stat(stats: dict, key: str) -> float | None:
+    value = stats.get(key)
+    if value is None:
+        return None
+    value = float(value)
+    if value < 0:
+        raise ValueError(f"Ramulator power statistic {key!r} must be non-negative")
+    return value
+
+
+def power_accounting_metadata(
+    dram_class: str,
+    stats: dict,
+    *,
+    power_profile: str | None = None,
+) -> dict[str, object]:
+    if dram_class == "LPDDR6PIM":
+        base_energy = _finite_nonnegative_stat(stats, "total_energy")
+        pim_energy = _finite_nonnegative_stat(stats, "total_incremental_cmd_energy")
+        total_energy = (
+            None if base_energy is None or pim_energy is None else base_energy + pim_energy
+        )
+        coefficient_names = (
+            "pim_compute_energy_pJ_per_mac",
+            "pim_cell_to_pim_energy_pJ_per_256b",
+            "pim_vrf_access_energy_pJ",
+            "pim_srf_access_energy_pJ",
+            "pim_array_local_energy_pJ",
+            "pim_mode_switch_energy_pJ",
+        )
+        coefficients = {key: float(stats[key]) for key in coefficient_names if key in stats}
+        return {
+            "status": "experimental_drampower_reference",
+            "model": "drampower_v6.2_test_profile_plus_pimscope_pim_events",
+            "equation": "E = E_LPDDR6_reference + E_PIM",
+            "standard_background_command_energy_available": base_energy is not None,
+            "standard_power_calibrated_to_device": False,
+            "pim_event_coefficients_available": True,
+            "pim_energy_method": "lpddr5pim_event_coefficients",
+            "metadata_documentation": "ramulator2/docs/PIMScope-metadata.md",
+            "energy_units": "pJ",
+            "total_standard_energy_pJ": base_energy,
+            "total_pim_event_energy_pJ": pim_energy,
+            "total_energy_pJ": total_energy,
+            "coefficients": coefficients,
+            "power_profile": power_profile or "DRAMPOWER_V620_LPDDR6_TEST_PROFILE",
+            "standard_power_source": {
+                "repository": "https://github.com/tukl-msd/DRAMPower",
+                "version": "v6.2.0",
+                "commit": "d8b980ab9e725480787b130798ad7ef675517b34",
+                "path": "tests/tests_drampower/resources/lpddr6.json",
+                "current_conversion": "A_to_mA",
+                "calibration": "test_fixture_not_device_datasheet",
+            },
+        }
+
+    base_energy = _finite_nonnegative_stat(stats, "total_energy")
+    pim_energy = _finite_nonnegative_stat(stats, "total_incremental_cmd_energy")
+    total_energy = None if base_energy is None or pim_energy is None else base_energy + pim_energy
+    coefficient_names = (
+        "pim_compute_energy_pJ_per_mac",
+        "pim_cell_to_pim_energy_pJ_per_256b",
+        "pim_vrf_access_energy_pJ",
+        "pim_srf_access_energy_pJ",
+        "pim_array_local_energy_pJ",
+        "pim_mode_switch_energy_pJ",
+    )
+    coefficients = {key: float(stats[key]) for key in coefficient_names if key in stats}
+    return {
+        "status": "paper_two_layer",
+        "model": "pimscope_camera_ready_table_iii",
+        "equation": "E = E_LPDDR + E_PIM",
+        "energy_scope": "standard_memory_plus_incremental_pim_events",
+        "standard_energy_units": dict(PAPER_LPDDR5_POWER_UNITS),
+        "standard_power_source": dict(PAPER_LPDDR5_POWER_PROVENANCE),
+        "standard_background_command_energy_available": base_energy is not None,
+        "standard_power_calibrated_to_device": False,
+        "pim_event_coefficients_available": True,
+        "pim_energy_method": "paper_event_coefficients",
+        "metadata_documentation": "ramulator2/docs/PIMScope-metadata.md",
+        "energy_units": "pJ",
+        "total_standard_energy_pJ": base_energy,
+        "total_pim_event_energy_pJ": pim_energy,
+        "total_energy_pJ": total_energy,
+        "coefficients": coefficients,
+        "power_profile": power_profile or PAPER_LPDDR5_POWER_PROFILE_NAME,
+    }
 
 
 def count_concrete_opcodes(concrete: list[dict]) -> dict[str, int]:
@@ -159,6 +273,70 @@ def time_unit_ns(cfg: dict | None = None) -> float:
     return float(timing["tCK_ps"]) / 1000.0
 
 
+_FRONTEND_COUNT_KEYS = (
+    "records_loaded",
+    "records_expanded",
+    "opcode_requests_sent",
+    "opcode_requests_completed",
+    "sb_records",
+    "hab_records",
+    "hab_pim_records",
+    "pim_bcast_records",
+    "pim_mac_records",
+    "pim_mac_ab_records",
+    "read_records",
+    "write_records",
+)
+
+
+def _frontend_counts(frontend: dict) -> dict[str, int]:
+    return {key: int(frontend.get(key, 0) or 0) for key in _FRONTEND_COUNT_KEYS}
+
+
+def _expected_frontend_counts(records: list[dict]) -> dict[str, int]:
+    return {
+        "records_loaded": len(records),
+        "records_expanded": sum(int(record.get("repeat", 1)) for record in records),
+        **{
+            field: sum(1 for record in records if record["opcode"] == opcode)
+            for field, opcode in (
+                ("sb_records", "SB"),
+                ("hab_records", "HAB"),
+                ("hab_pim_records", "HAB_PIM"),
+                ("pim_bcast_records", "PIM_BCAST"),
+                ("pim_mac_records", "PIM_MAC"),
+                ("pim_mac_ab_records", "PIM_MAC_AB"),
+                ("read_records", "READ"),
+                ("write_records", "WRITE"),
+            )
+        },
+    }
+
+
+def _replay_integrity(
+    records: list[dict], frontend: dict, *, cycles: int, pim_commands: int
+) -> tuple[bool, dict[str, object]]:
+    actual = _frontend_counts(frontend)
+    expected = _expected_frontend_counts(records)
+    counts_match = all(actual[key] == value for key, value in expected.items())
+    sent = actual["opcode_requests_sent"]
+    completed = actual["opcode_requests_completed"]
+    replay_ok = (
+        cycles > 0
+        and pim_commands > 0
+        and counts_match
+        and sent == actual["records_expanded"]
+        and completed == sent
+    )
+    return replay_ok, {
+        "expected_record_counts": expected,
+        "frontend_counts_match": counts_match,
+        "opcode_requests_sent": sent,
+        "opcode_requests_completed": completed,
+        "opcode_request_completion_match": sent == completed,
+    }
+
+
 def replay_concrete_trace(
     concrete_records: list[dict],
     *,
@@ -172,6 +350,11 @@ def replay_concrete_trace(
     from ramulator.workload_surrogate.lpddr5_pim_concrete_trace import write_jsonl
 
     cfg = backend_cfg or LPDDR5_PIM_CONFIG
+    dram_class = cfg.get("dram_class", "LPDDR5PIM")
+    if dram_class not in {"LPDDR5PIM", "LPDDR6PIM"}:
+        raise ValueError(
+            f"Concrete PIM replay frontend supports LPDDR5PIM and LPDDR6PIM only; got {dram_class}"
+        )
     dram = create_dram(cfg, dram_kwargs_overrides=pim_cfg_override)
     tck_ns = time_unit_ns(cfg)
     layout = extract_dram_layout(dram)
@@ -183,6 +366,7 @@ def replay_concrete_trace(
             trace_path,
             address_layout=layout,
             max_expanded_records=max_expanded_records,
+            dram_class=dram_class,
         )
         frontend = create_concrete_frontend(
             trace_path,
@@ -203,33 +387,49 @@ def replay_concrete_trace(
     cycles = int(ctrl.get("cycles", 0) or 0)
     pim_mac = int(ctrl.get("num_issued_pim_mac", 0) or 0)
     pim_mac_ab = int(ctrl.get("num_issued_pim_mac_ab", 0) or 0)
-    replay_ok = cycles > 0 and (pim_mac > 0 or pim_mac_ab > 0)
 
     opcode_counts = count_concrete_opcodes(concrete_records)
+    frontend_stats = _frontend_counts(fe)
+    replay_ok, replay_integrity = _replay_integrity(
+        concrete_records, fe, cycles=cycles, pim_commands=pim_mac + pim_mac_ab
+    )
+    execution_model = getattr(dram, "pim_mac_execution_model", None)
+    if execution_model is None:
+        execution_model = cfg.get("dram_kwargs", {}).get(
+            "pim_mac_execution_model", "shared_block_serial"
+        )
 
     def _stat_int(key: str) -> int:
         return int(ctrl.get(key, 0) or 0)
 
     return {
+        "dram_class": type(dram).__name__,
+        "trace_schema": CONCRETE_SCHEMA_VERSIONS[type(dram).__name__],
+        "power_accounting": power_accounting_metadata(
+            type(dram).__name__,
+            ctrl,
+            power_profile=(
+                PAPER_LPDDR5_POWER_PROFILE_NAME
+                if type(dram).__name__ == "LPDDR5PIM"
+                else "DRAMPOWER_V620_LPDDR6_TEST_PROFILE"
+            ),
+        ),
         "cycles": cycles,
         "runtime_ns": cycles * tck_ns,
         "address_mapping_version": layout["mapping_version"],
         "addressable_capacity_bytes": layout["capacity_bytes"],
-        "command_counts": opcode_counts,
+        "trace_opcode_counts": opcode_counts,
+        "refresh_manager": cfg.get("controller", {}).get("refresh_manager", "NoRefresh"),
+        "pim_mac_execution_model": execution_model,
+        "pim_mac_execution_model_status": (
+            "experimental" if execution_model == "subbank_overlap_experimental" else "supported"
+        ),
         "pim_mac_issued": pim_mac,
         "pim_mac_ab_issued": pim_mac_ab,
         "pim_bcast_issued": opcode_counts.get("PIM_BCAST", 0),
         "replay_ok": replay_ok,
-        "frontend_stats": {
-            k: fe[k]
-            for k in (
-                "requests_issued",
-                "pim_requests_completed",
-                "completed",
-                "total_records_replayed",
-            )
-            if k in fe
-        },
+        "frontend_stats": frontend_stats,
+        "replay_integrity": replay_integrity,
         "pim_shared_block_stalls": _stat_int("pim_shared_block_stalls"),
         "pim_dependency_stalls": _stat_int("pim_dependency_stalls"),
         "pim_capacity_stalls": _stat_int("pim_capacity_stalls"),
@@ -240,6 +440,16 @@ def replay_concrete_trace(
         "pim_ab_completion_latency_cycles": _stat_int("pim_ab_completion_latency_cycles"),
         "num_bank_timing_blocked_cycles": _stat_int("num_bank_timing_blocked_cycles"),
         "num_shared_block_busy_blocked_cycles": _stat_int("num_shared_block_busy_blocked_cycles"),
+        "power_stats": {
+            key: ctrl[key]
+            for key in (
+                "total_background_energy",
+                "total_cmd_energy",
+                "total_energy",
+                "total_incremental_cmd_energy",
+            )
+            if key in ctrl
+        },
     }
 
 
@@ -275,9 +485,8 @@ def generate_and_replay(
     else:
         raise ValueError(f"Unknown phase: {phase}")
 
-    # Bank interleaving is only applied when concurrent inflight is enabled.
-    # Every lowering path receives the device-derived hierarchy so host and PIM
-    # addresses are validated against the same organization.
+    # Bank interleaving requires concurrent in-flight requests.
+    # Lowering uses the resolved device hierarchy for host and PIM addresses.
     interleave_banks = max_inflight_requests > 1
     layout = extract_dram_layout(create_dram(dram_kwargs_overrides=pim_cfg_override))
     lower_kwargs: dict = {
@@ -298,7 +507,7 @@ def generate_and_replay(
     concrete = lower_semantic_records_to_concrete(semantic, **lower_kwargs)
     opcode_counts = count_concrete_opcodes(concrete)
 
-    # All-bank ops are serialized by the controller; per-bank modes can span banks.
+    # All-bank operations are serialized; per-bank modes can span banks.
     effective_inflight = max_inflight_requests
     if interleave_banks and mac_mode in ("per_kind", "per_bank"):
         max_span = max(
@@ -373,8 +582,14 @@ def infer_model_family(name: str) -> str:
     return "Unknown"
 
 
-def prefill_formula(model_key: str, *, prompt_len: int) -> dict:
-    from ramulator.dram.lpddr5_pim import PIM_DATATYPE_RESOURCES
+def prefill_formula(model_key: str, *, prompt_len: int, dram_class: str = "LPDDR5PIM") -> dict:
+    if dram_class not in {"LPDDR5PIM", "LPDDR6PIM"}:
+        raise ValueError(f"Unsupported PIM backend for prefill formula: {dram_class}")
+    datatype_resources = (
+        LPDDR6_PIM_DATATYPE_RESOURCES
+        if dram_class == "LPDDR6PIM"
+        else LPDDR5_PIM_DATATYPE_RESOURCES
+    )
     from ramulator.workload_surrogate.generate_full_transformer import (
         FFN_VARIANT_PROJECTION_COUNTS,
         get_dense_prefill_manifests,
@@ -383,7 +598,7 @@ def prefill_formula(model_key: str, *, prompt_len: int) -> dict:
 
     spec = get_model_spec(model_key)
     attn_m, _ = get_dense_prefill_manifests(spec, prompt_len=prompt_len)
-    res = PIM_DATATYPE_RESOURCES[spec.datatype]
+    res = datatype_resources[spec.datatype]
     lanes = int(res["pim_lanes"])
     prim_ops = int(res["pim_ops_per_mac"])
     nkv = int(spec.num_kv_heads or spec.num_heads)

@@ -34,6 +34,26 @@ void WR(DRAMNode* node, int cmd, const AddrVec_t&, Clk_t) {
   node->m_spec->power_stats[get_flat_rank_id<T>(node)].command_counters[T::PowerCommand::WR]++;
 }
 
+template <class T>
+void RD_S(DRAMNode* node, int, const AddrVec_t&, Clk_t) {
+  node->m_spec->power_stats[get_flat_rank_id<T>(node)].command_counters[T::PowerCommand::RD_S]++;
+}
+
+template <class T>
+void RD_L(DRAMNode* node, int, const AddrVec_t&, Clk_t) {
+  node->m_spec->power_stats[get_flat_rank_id<T>(node)].command_counters[T::PowerCommand::RD_L]++;
+}
+
+template <class T>
+void WR_S(DRAMNode* node, int, const AddrVec_t&, Clk_t) {
+  node->m_spec->power_stats[get_flat_rank_id<T>(node)].command_counters[T::PowerCommand::WR_S]++;
+}
+
+template <class T>
+void WR_L(DRAMNode* node, int, const AddrVec_t&, Clk_t) {
+  node->m_spec->power_stats[get_flat_rank_id<T>(node)].command_counters[T::PowerCommand::WR_L]++;
+}
+
 }  // namespace Bank
 
 namespace Rank {

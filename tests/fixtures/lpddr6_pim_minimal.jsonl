@@ -1,0 +1,2 @@
+{"dram_class":"LPDDR6PIM","schema_version":"lpddr6-pim-opcode-v0.1"}
+{"addr_vec":[0,0,0,0,9,0],"opcode":"PIM_MAC","repeat":1}

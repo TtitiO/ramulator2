@@ -75,6 +75,10 @@ class DeviceUnderTest:
         """
         return build_addr_vec(self.level_names, wildcard=self.ALL, **levels)
 
+    def bank_mapping(self, addr_vec: list[int], banks_per_group: int) -> dict:
+        """Return the canonical rank-local flat-bank/shared-group mapping."""
+        return dict(self._cpp.bank_mapping(addr_vec, banks_per_group))
+
     def probe(self, command: str, addr_vec: list[int], clk: int) -> ProbeResult:
         """Read-only query: would ``command`` be legal at ``clk`` for ``addr_vec``?
 
@@ -100,9 +104,7 @@ class DeviceUnderTest:
             clk += 1
         return clk
 
-    def assert_earliest_ready_at(
-        self, command: str, addr_vec: list[int], clk: int
-    ) -> None:
+    def assert_earliest_ready_at(self, command: str, addr_vec: list[int], clk: int) -> None:
         """Assert ``command`` becomes legal at *exactly* ``clk``.
 
         Probes at ``clk - 1`` (if ``clk > 0``) and asserts ``not ready``; probes

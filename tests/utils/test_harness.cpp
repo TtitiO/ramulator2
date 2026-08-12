@@ -47,6 +47,19 @@ class DeviceUnderTestCpp {
     return spec().get_timing_value(name);
   }
 
+  nb::dict bank_mapping(const AddrVec_t& addr_vec, int banks_per_group) const {
+    validate_addr_vec_size(spec(), addr_vec);
+    const int flat_bank = m_device.get_flat_bank_id(addr_vec);
+    nb::dict out;
+    out["flat_bank"] = flat_bank;
+    out["rank"] = m_device.get_rank_id_for_flat_bank(flat_bank);
+    out["rank_local_bank"] = m_device.get_rank_local_bank_id(flat_bank);
+    out["rank_local_group"] = m_device.get_rank_local_group_id(flat_bank, banks_per_group);
+    out["global_group"] = m_device.get_global_rank_local_group_id(flat_bank, banks_per_group);
+    out["group_banks"] = m_device.get_rank_local_group_banks(flat_bank, banks_per_group);
+    return out;
+  }
+
   nb::dict probe(const std::string& command_name, const AddrVec_t& addr_vec, Clk_t clk) {
     validate_addr_vec_size(spec(), addr_vec);
     int cmd = spec().get_command_id(command_name);
@@ -396,6 +409,8 @@ NB_MODULE(_ramulator_test, m) {
       .def_prop_ro("command_names", &DeviceUnderTestCpp::command_names)
       .def_prop_ro("timings", &DeviceUnderTestCpp::timings)
       .def("timing", &DeviceUnderTestCpp::timing, nb::arg("name"))
+      .def("bank_mapping", &DeviceUnderTestCpp::bank_mapping,
+           nb::arg("addr_vec"), nb::arg("banks_per_group"))
       .def("probe", &DeviceUnderTestCpp::probe, nb::arg("command"), nb::arg("addr_vec"), nb::arg("clk"))
       .def("issue", &DeviceUnderTestCpp::issue, nb::arg("command"), nb::arg("addr_vec"), nb::arg("clk"));
 

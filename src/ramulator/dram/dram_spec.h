@@ -137,7 +137,6 @@ struct DRAMSpec {
   int pim_movement_cycles = 1;
   int pim_writeback_cycles = 0;
   int pim_slots_per_request = 1;
-  int pim_slot_cost = 1;  // Compatibility alias for pim_slots_per_request.
   double pim_compute_energy_pJ_per_mac = 0.0;
   double pim_array_local_energy_pJ = 0.0;
   double pim_cell_to_pim_energy_pJ_per_256b = 0.0;

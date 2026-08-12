@@ -88,7 +88,9 @@ def rank_bank_coords(dut: cs.ControllerUnderTest, cmd) -> tuple[int, int, int]:
     )
 
 
-def per_bank_stats(stats: dict, prefix: str, bank_count: int = 4) -> list[int]:
+def per_bank_stats(stats: dict, prefix: str, bank_count: int | None = None) -> list[int]:
+    if bank_count is None:
+        bank_count = int(stats["total_banks"])
     return [stats[f"{prefix}{bank_id}"] for bank_id in range(bank_count)]
 
 
@@ -100,6 +102,48 @@ def assert_pim_latency_split_identity(stats: dict):
         assert stats["avg_pim_response_latency"] == pytest.approx(
             stats["avg_pim_launch_wait"] + stats["avg_pim_service_latency"]
         )
+
+
+def test_paper_energy_profile_is_complete_and_units_are_documented():
+    from ramulator.dram.lpddr5_pim import (
+        PAPER_LPDDR5_POWER,
+        PAPER_LPDDR5_POWER_PROVENANCE,
+        PAPER_LPDDR5_POWER_UNITS,
+        validate_lpddr5_power_profile,
+    )
+
+    validate_lpddr5_power_profile(PAPER_LPDDR5_POWER)
+    assert PAPER_LPDDR5_POWER_UNITS == {
+        "current": "mA",
+        "voltage": "V",
+        "time": "ns",
+        "energy": "pJ",
+    }
+    assert PAPER_LPDDR5_POWER_PROVENANCE["legacy_conversion_scale"] == pytest.approx(1e-3)
+
+
+def test_invalid_paper_energy_profile_fails_with_field_name():
+    from ramulator.dram.lpddr5_pim import PAPER_LPDDR5_POWER, validate_lpddr5_power_profile
+
+    invalid = dict(PAPER_LPDDR5_POWER)
+    del invalid["IDD4R1"]
+    with pytest.raises(ValueError, match=r"IDD4R1"):
+        validate_lpddr5_power_profile(invalid)
+
+
+def test_paper_energy_defaults_match_camera_ready_table_iii():
+    dram = ramulator.dram.LPDDR5PIM(
+        org_preset="LPDDR5_8Gb_x16",
+        timing_preset="LPDDR5_6400",
+    )
+    config = dram.to_config()
+    assert config["power"]["enabled"] is True
+    assert config["power"]["VDD1"] == pytest.approx(1.80)
+    assert config["power"]["IDD4R2H"] == pytest.approx(18.00)
+    assert config["pim_compute_energy_pJ_per_mac"] == pytest.approx(0.35)
+    assert config["pim_cell_to_pim_energy_pJ_per_256b"] == pytest.approx(2.68)
+    assert config["pim_vrf_access_energy_pJ"] == pytest.approx(3.17)
+    assert config["pim_srf_access_energy_pJ"] == pytest.approx(0.40)
 
 
 def test_pimcompute_issues_act1_act2_pim_mac():
@@ -657,8 +701,8 @@ def test_bounded_multi_bank_round_robin_keeps_one_inflight_slot_per_bank():
     assert stats["pim_capacity_stalls"] == 0
     assert stats["pim_inflight_peak"] == 1
     assert stats["pim_simultaneous_active_banks_peak"] == 3
-    assert per_bank_stats(stats, "pim_launches_bank_") == [1, 1, 1, 1]
-    assert per_bank_stats(stats, "pim_inflight_peak_bank_") == [1, 1, 1, 1]
+    assert per_bank_stats(stats, "pim_launches_bank_") == [1, 1, 1, 1] + [0] * 12
+    assert per_bank_stats(stats, "pim_inflight_peak_bank_") == [1, 1, 1, 1] + [0] * 12
 
 
 def test_cross_bank_refpb_waits_only_for_target_bank_while_other_bank_remains_inflight():
@@ -693,8 +737,8 @@ def test_cross_bank_refpb_waits_only_for_target_bank_while_other_bank_remains_in
     assert history[6].clk > pim_cmds[0].clk + dut.timings["nPIM_MAC_LAT"]
     assert stats["num_pim_reqs_served"] == 2
     assert stats["pim_simultaneous_active_banks_peak"] == 2
-    assert per_bank_stats(stats, "pim_launches_bank_") == [1, 1, 0, 0]
-    assert per_bank_stats(stats, "pim_inflight_peak_bank_") == [1, 1, 0, 0]
+    assert per_bank_stats(stats, "pim_launches_bank_") == [1, 1] + [0] * 14
+    assert per_bank_stats(stats, "pim_inflight_peak_bank_") == [1, 1] + [0] * 14
 
 
 def test_all_bank_load_then_execute_requires_mode_and_load_ordering():
@@ -728,8 +772,8 @@ def test_all_bank_load_then_execute_requires_mode_and_load_ordering():
     assert stats["pim_mode_stalls"] == 0
     assert stats["pim_ab_inflight_peak"] == 1
     assert stats["pim_inflight_peak"] == 16
-    assert per_bank_stats(stats, "pim_launches_bank_") == [1, 1, 1, 1]
-    assert per_bank_stats(stats, "pim_inflight_peak_bank_") == [1, 1, 1, 1]
+    assert per_bank_stats(stats, "pim_launches_bank_") == [1] * 16
+    assert per_bank_stats(stats, "pim_inflight_peak_bank_") == [1] * 16
     assert_pim_latency_split_identity(stats)
     assert stats["pim_service_latency"] == stats["pim_ab_completion_latency_cycles"]
     assert stats["pim_ab_completion_latency_cycles"] == (

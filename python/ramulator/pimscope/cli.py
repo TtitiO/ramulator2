@@ -1,12 +1,13 @@
-"""Command-line interface for the simulator-owned PIMScope experiment API."""
-
-from __future__ import annotations
+"""Command-line interface for PIMScope experiments."""
 
 import argparse
+import importlib.machinery
 import json
 import platform
+import shutil
 import subprocess
 import sys
+from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from typing import Any
 
@@ -54,6 +55,45 @@ def _find_ramulator_root(package_path: Path) -> Path | None:
     return None
 
 
+def _version_tuple(value: str) -> tuple[int, ...]:
+    parts = []
+    for part in value.split("."):
+        digits = "".join(char for char in part if char.isdigit())
+        if not digits:
+            break
+        parts.append(int(digits))
+    return tuple(parts)
+
+
+def _tool_version(command: str, flag: str = "--version") -> str:
+    executable = shutil.which(command)
+    if executable is None:
+        raise RuntimeError(f"{command} was not found; install it or select a supported toolchain")
+    output = subprocess.check_output(
+        [executable, flag], text=True, stderr=subprocess.STDOUT
+    ).splitlines()
+    return output[0].strip() if output else "unknown"
+
+
+def _native_extension_details(package_dir: Path) -> dict[str, Any]:
+    candidates = sorted(package_dir.glob("_ramulator*.so"))
+    expected = importlib.machinery.EXTENSION_SUFFIXES[0]
+    compatible = [path for path in candidates if path.name.endswith(expected)]
+    if not compatible:
+        found = ", ".join(path.name for path in candidates) or "none"
+        raise RuntimeError(
+            f"no native extension compatible with Python {platform.python_version()}; "
+            f"expected a file ending in {expected!r}, found: {found}. Rebuild with "
+            "the same Python interpreter used to run PIMScope"
+        )
+    import ramulator._ramulator as native
+
+    return {
+        "extension": str(Path(native.__file__).resolve()),
+        "python": platform.python_version(),
+    }
+
+
 def _doctor_check(name: str, check) -> dict[str, Any]:
     try:
         details = check()
@@ -72,6 +112,59 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
 
     checks.append(_doctor_check("python", python_check))
 
+    def cmake_check() -> dict[str, Any]:
+        version_line = _tool_version("cmake")
+        version = version_line.rsplit(" ", 1)[-1]
+        if _version_tuple(version) < (3, 14):
+            raise RuntimeError(
+                f"CMake {version} is unsupported; use CMake >= 3.14 and ensure it "
+                "precedes other PATH entries"
+            )
+        return {"version": version, "supported": True}
+
+    checks.append(_doctor_check("cmake", cmake_check))
+
+    def compiler_check() -> dict[str, Any]:
+        compiler = shutil.which("c++") or shutil.which("g++") or shutil.which("clang++")
+        if compiler is None:
+            raise RuntimeError("no C++ compiler found; install g++ or clang++ with C++20 support")
+        version = subprocess.check_output(
+            [compiler, "--version"], text=True, stderr=subprocess.STDOUT
+        ).splitlines()[0]
+        return {"compiler": compiler, "version": version, "standard": "C++20 requested by CMake"}
+
+    checks.append(_doctor_check("cxx-compiler", compiler_check))
+
+    def git_check() -> dict[str, Any]:
+        git = shutil.which("git")
+        if git is None:
+            raise RuntimeError(
+                "git was not found; install Git and initialize ramulator2 recursively"
+            )
+        package_path = Path(__file__).resolve()
+        parent = next(
+            (path for path in package_path.parents if (path / ".gitmodules").exists()), None
+        )
+        if parent is None:
+            repository = _find_ramulator_root(package_path)
+            if repository is None:
+                raise RuntimeError("cannot locate the Ramulator source repository")
+            return {"repository": str(repository), "commit": _git_revision(repository)}
+        result = subprocess.run(
+            [git, "-C", str(parent), "submodule", "status", "--recursive"],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        if result.returncode != 0:
+            raise RuntimeError(result.stderr.strip() or "git submodule status failed")
+        lines = result.stdout.splitlines()
+        if not lines or any(line.startswith(("-", "+", "U")) for line in lines):
+            raise RuntimeError("submodules are missing or differ from the parent gitlinks")
+        return {"repository": str(parent), "submodules": lines}
+
+    checks.append(_doctor_check("git-submodule", git_check))
+
     def package_check() -> dict[str, Any]:
         import ramulator
 
@@ -85,31 +178,39 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
     checks.append(_doctor_check("ramulator-package", package_check))
 
     def native_check() -> dict[str, Any]:
-        import ramulator._ramulator as native
+        import ramulator
 
-        return {"extension": str(Path(native.__file__).resolve())}
+        return _native_extension_details(Path(ramulator.__file__).resolve().parent)
 
     checks.append(_doctor_check("native-extension", native_check))
 
     def component_check() -> dict[str, Any]:
         import ramulator
 
-        dram = ramulator.dram.LPDDR5PIM(
-            org_preset="LPDDR5_8Gb_x16",
-            timing_preset="LPDDR5_6400",
-            pim_datatype="int8",
-            pim_banks_per_block=2,
-            pim_mac_execution_model="shared_block_serial",
-        )
-        organization, timing = dram.resolve()
-        return {
-            "dram_class": type(dram).__name__,
-            "rank": organization.get("rank"),
-            "bank": organization.get("bank"),
-            "timing_tCK_ps": timing.get("tCK_ps"),
-        }
+        resolved = []
+        for dram_class, org_preset, timing_preset in (
+            ("LPDDR5PIM", "LPDDR5_8Gb_x16", "LPDDR5_6400"),
+            ("LPDDR6PIM", "LPDDR6_16Gb_x12", "LPDDR6_10667_BL24"),
+        ):
+            dram = getattr(ramulator.dram, dram_class)(
+                org_preset=org_preset,
+                timing_preset=timing_preset,
+                pim_datatype="int8",
+                pim_banks_per_block=2,
+                pim_mac_execution_model="shared_block_serial",
+            )
+            organization, timing = dram.resolve()
+            resolved.append(
+                {
+                    "dram_class": type(dram).__name__,
+                    "rank": organization.get("rank"),
+                    "bank": organization.get("bank"),
+                    "timing_tCK_ps": timing.get("tCK_ps"),
+                }
+            )
+        return {"standards": resolved}
 
-    checks.append(_doctor_check("lpddr5-pim-component", component_check))
+    checks.append(_doctor_check("pim-dram-components", component_check))
     checks.append(
         _doctor_check(
             "pim-backend-capabilities",
@@ -197,14 +298,28 @@ def _cmd_run(args: argparse.Namespace) -> int:
     return 0 if result["status"] == "PASS" else 1
 
 
-def build_parser(*, prog: str = "ramulator-pimscope") -> argparse.ArgumentParser:
+def _version_text() -> str:
+    versions = {}
+    for package in ("pimscope", "ramulator"):
+        try:
+            versions[package] = version(package)
+        except PackageNotFoundError:
+            versions[package] = "not-installed"
+    return (
+        f"PIMScope {versions['pimscope']}; Ramulator {versions['ramulator']}; "
+        f"Ramulator commit {_git_revision(Path(__file__).resolve().parents[3])}"
+    )
+
+
+def build_parser(*, prog: str | None = None) -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog=prog,
         description=(
             "Validate and run configurable LPDDR5-PIM workload-surrogate "
-            "experiments (LPDDR6-PIM planned)"
+            "experiments (LPDDR5PIM supported; LPDDR6PIM experimental)"
         ),
     )
+    parser.add_argument("--version", action="version", version=_version_text())
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     doctor = subparsers.add_parser(
@@ -279,7 +394,7 @@ def build_parser(*, prog: str = "ramulator-pimscope") -> argparse.ArgumentParser
 def main(
     argv: list[str] | None = None,
     *,
-    prog: str = "ramulator-pimscope",
+    prog: str | None = None,
     output_base: Path | None = None,
     provenance: dict[str, Any] | None = None,
 ) -> int:
@@ -290,7 +405,7 @@ def main(
     try:
         return args.func(args)
     except (ImportError, OSError, RuntimeError, ValueError) as exc:
-        parser.exit(2, f"{prog}: error: {exc}\n")
+        parser.error(str(exc))
 
 
 if __name__ == "__main__":

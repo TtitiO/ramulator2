@@ -17,7 +17,10 @@ def extract_dram_layout(dram: Any) -> dict[str, Any]:
     cls = type(dram)
     level_names = list(cls.levels.keys())
     organization, _ = dram.resolve()
-    level_sizes = [1 if name == "Channel" else int(organization[name.lower()]) for name in level_names]
+    level_sizes = [
+        1 if name == "Channel" else int(organization[name.lower()])
+        for name in level_names
+    ]
 
     if not level_names or level_names[0] != "Channel":
         raise ValueError("DRAM hierarchy must begin with Channel")
@@ -72,8 +75,23 @@ def extract_dram_layout(dram: Any) -> dict[str, Any]:
     capacity_bytes = tx_bytes * prod(address_level_sizes)
     total_bank_units = prod(controller_bank_counts)
 
+    subchannel_model = getattr(cls, "subchannel_model", None)
+    if subchannel_model is not None:
+        subchannel_model = dict(subchannel_model)
+        if subchannel_model.get("modeled_subchannels_per_channel") != 1:
+            raise ValueError(
+                "PIMScope concrete traces currently require exactly one modeled "
+                "sub-channel per Channel"
+            )
+        if subchannel_model.get("independent_subchannel_scheduling") is not False:
+            raise ValueError(
+                "PIMScope does not support independent LPDDR6 sub-channel scheduling"
+            )
+
     return {
+        "dram_class": cls.name,
         "mapping_version": 1,
+        "subchannel_model": subchannel_model,
         "level_names": level_names,
         "level_sizes": level_sizes,
         "address_level_sizes": address_level_sizes,
@@ -123,7 +141,8 @@ def validate_addr_vec(
         raise ValueError(
             f"{context} length {len(addr_vec)} must equal hierarchy level count {len(level_names)}"
         )
-    for index, (name, size, value) in enumerate(zip(level_names, level_sizes, addr_vec, strict=True)):
+    coordinates = zip(level_names, level_sizes, addr_vec, strict=True)
+    for index, (name, size, value) in enumerate(coordinates):
         if isinstance(value, bool) or not isinstance(value, int):
             raise ValueError(f"{context}[{index}] ({name}) must be an integer")
         if allow_wildcards and value == -1:
@@ -151,10 +170,15 @@ def addr_vec_from_byte_address(
     if isinstance(address, bool) or not isinstance(address, int) or address < 0:
         raise ValueError("host byte address must be a non-negative integer")
     if len(level_names) != len(level_sizes) or not level_names:
-        raise ValueError("address layout level_names and level_sizes must be non-empty and equal length")
+        raise ValueError(
+            "address layout level_names and level_sizes must be non-empty and equal length"
+        )
     if level_names[-1] != "Column":
         raise ValueError("address layout requires Column as the final hierarchy level")
-    if any(isinstance(size, bool) or not isinstance(size, int) or size <= 0 for size in level_sizes):
+    if any(
+        isinstance(size, bool) or not isinstance(size, int) or size <= 0
+        for size in level_sizes
+    ):
         raise ValueError("address layout level_sizes must contain positive integers")
     if internal_prefetch_size <= 0 or level_sizes[-1] % internal_prefetch_size != 0:
         raise ValueError("Column size must be divisible by internal_prefetch_size")

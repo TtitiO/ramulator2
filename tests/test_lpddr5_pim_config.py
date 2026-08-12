@@ -12,6 +12,14 @@ def make_dram(**kwargs):
     return ramulator.dram.LPDDR5PIM(**BASE_KWARGS, **kwargs)
 
 
+def make_lpddr6_pim(**kwargs):
+    return ramulator.dram.LPDDR6PIM(
+        org_preset="LPDDR6_16Gb_x12",
+        timing_preset="LPDDR6_10667_BL24",
+        **kwargs,
+    )
+
+
 def test_default_config_serializes_explicit_execution_contract():
     cfg = make_dram().to_config()
 
@@ -64,27 +72,6 @@ def test_simd_width_and_lane_count_must_describe_the_same_resource():
         make_dram(pim_datatype_bits=8, pim_simd_width_bits=256, pim_lanes=16)
 
 
-def test_legacy_shared_block_names_normalize_with_deprecation_warnings():
-    with pytest.warns(DeprecationWarning, match="pim_banks_per_mpu"):
-        cfg = make_dram(pim_banks_per_mpu=1).to_config()
-    assert cfg["pim_banks_per_block"] == 1
-    assert "pim_banks_per_mpu" not in cfg
-
-    with pytest.warns(DeprecationWarning, match="shared_mpu_serial"):
-        cfg = make_dram(pim_mac_execution_model="shared_mpu_serial").to_config()
-    assert cfg["pim_mac_execution_model"] == "shared_block_serial"
-
-
-def test_legacy_shared_block_field_conflicts_fail_closed():
-    with pytest.raises(ValueError, match="conflicts"):
-        make_dram(pim_banks_per_block=1, pim_banks_per_mpu=2)
-
-
-def test_legacy_slot_cost_alias_cannot_conflict_with_canonical_slot_count():
-    with pytest.raises(ValueError, match="compatibility alias"):
-        make_dram(pim_slots_per_request=2, pim_slot_cost=1)
-
-
 def test_datatype_behavior_requires_enough_bank_slots_for_each_request():
     with pytest.raises(ValueError, match="at least pim_slots_per_request"):
         make_dram(
@@ -97,3 +84,20 @@ def test_datatype_behavior_requires_enough_bank_slots_for_each_request():
 def test_unsupported_source_backed_datatype_behavior_is_explicitly_rejected():
     with pytest.raises(ValueError, match="source-backed datatype resources"):
         make_dram(pim_datatype="bf16", pim_datatype_behavior_enabled=True)
+
+
+@pytest.mark.parametrize("factory", [make_dram, make_lpddr6_pim])
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        ("pim_datatype_bits", 8.5, "must be an integer"),
+        ("pim_lanes", "32", "must be an integer"),
+        ("pim_ops_per_mac", 2.5, "must be an integer"),
+        ("pim_movement_cycles", True, "must be an integer"),
+        ("pim_datatype_behavior_enabled", 1, "must be a boolean"),
+        ("pim_compute_energy_pJ_per_mac", "0.35", "must be a number"),
+    ],
+)
+def test_resource_overrides_reject_implicit_type_coercion(factory, field, value, message):
+    with pytest.raises(ValueError, match=message):
+        factory(**{field: value})

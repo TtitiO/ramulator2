@@ -1,5 +1,9 @@
 #include "ramulator/dram/device.h"
 
+#include <stdexcept>
+
+#include <fmt/format.h>
+
 namespace Ramulator {
 
 void DRAMDevice::init(std::unique_ptr<DRAMSpec> spec) {
@@ -61,6 +65,60 @@ int DRAMDevice::get_flat_bank_id(const AddrVec_t& addr_vec) const {
     id = id * m_spec->organization.level_sizes[lvl] + addr_vec[lvl];
   }
   return id;
+}
+
+int DRAMDevice::get_banks_per_rank() const {
+  const int rank_level = m_spec->get_level_id("Rank");
+  int banks = 1;
+  for (int level = rank_level + 1; level <= m_bank_level; level++) {
+    banks *= m_spec->organization.level_sizes[level];
+  }
+  return banks;
+}
+
+int DRAMDevice::get_rank_id_for_flat_bank(int flat_bank_id) const {
+  const int banks_per_rank = get_banks_per_rank();
+  if (flat_bank_id < 0 || flat_bank_id >= static_cast<int>(m_bank_nodes.size())) {
+    throw std::runtime_error(fmt::format(
+        "DRAMDevice: flat bank {} is outside [0, {})", flat_bank_id, m_bank_nodes.size()));
+  }
+  return flat_bank_id / banks_per_rank;
+}
+
+int DRAMDevice::get_rank_local_bank_id(int flat_bank_id) const {
+  get_rank_id_for_flat_bank(flat_bank_id);
+  return flat_bank_id % get_banks_per_rank();
+}
+
+int DRAMDevice::get_rank_local_group_id(int flat_bank_id, int banks_per_group) const {
+  const int banks_per_rank = get_banks_per_rank();
+  if (banks_per_group <= 0 || banks_per_group > banks_per_rank ||
+      banks_per_rank % banks_per_group != 0) {
+    throw std::runtime_error(fmt::format(
+        "DRAMDevice: banks_per_group {} must be positive, no greater than banks per rank {}, and divide it exactly",
+        banks_per_group,
+        banks_per_rank));
+  }
+  get_rank_id_for_flat_bank(flat_bank_id);
+  return get_rank_local_bank_id(flat_bank_id) / banks_per_group;
+}
+
+int DRAMDevice::get_global_rank_local_group_id(int flat_bank_id, int banks_per_group) const {
+  const int rank_local_group = get_rank_local_group_id(flat_bank_id, banks_per_group);
+  const int groups_per_rank = get_banks_per_rank() / banks_per_group;
+  return get_rank_id_for_flat_bank(flat_bank_id) * groups_per_rank + rank_local_group;
+}
+
+std::vector<int> DRAMDevice::get_rank_local_group_banks(int flat_bank_id, int banks_per_group) const {
+  const int rank = get_rank_id_for_flat_bank(flat_bank_id);
+  const int group = get_rank_local_group_id(flat_bank_id, banks_per_group);
+  const int begin = rank * get_banks_per_rank() + group * banks_per_group;
+  std::vector<int> banks;
+  banks.reserve(banks_per_group);
+  for (int bank = begin; bank < begin + banks_per_group; bank++) {
+    banks.push_back(bank);
+  }
+  return banks;
 }
 
 bool DRAMDevice::bank_matches(DRAMNode* bank, const AddrVec_t& addr_vec) {
