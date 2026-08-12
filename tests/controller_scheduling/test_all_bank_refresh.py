@@ -158,6 +158,43 @@ def test_all_bank_refresh_uses_rank_scope_for_lpddr5_pim():
     _assert_wildcard_levels(dut, ref, ["BankGroup", "Bank", "Row", "Column"])
 
 
+def test_all_bank_refresh_uses_rank_scope_for_lpddr6_pim():
+    dram = ramulator.dram.LPDDR6PIM(
+        org_preset="LPDDR6_16Gb_x12",
+        timing_preset="LPDDR6_10667_BL24",
+        nREFI=4,
+    )
+    dut = cs.ControllerUnderTest.make_lpddr_pim(
+        dram,
+        refresh_manager=ramulator.refresh_manager.AllBank(),
+    )
+
+    ref = _collect_issued(dut, command="REFab", count=1, max_ticks=16)[0]
+
+    assert ref.addr_vec[_level_index(dut, "Rank")] == 0
+    _assert_wildcard_levels(dut, ref, ["BankGroup", "Bank", "Row", "Column"])
+
+
+def test_all_bank_refresh_visits_each_lpddr6_pim_rank():
+    dram = ramulator.dram.LPDDR6PIM(
+        org_preset="LPDDR6_16Gb_x12",
+        timing_preset="LPDDR6_10667_BL24",
+        rank=2,
+        nREFI=4,
+    )
+    dut = cs.ControllerUnderTest.make_lpddr_pim(
+        dram,
+        refresh_manager=ramulator.refresh_manager.AllBank(),
+    )
+
+    refs = _collect_issued(dut, command="REFab", count=2, max_ticks=32)
+    rank_idx = _level_index(dut, "Rank")
+
+    assert [item.addr_vec[rank_idx] for item in refs] == [0, 1]
+    for item in refs:
+        _assert_wildcard_levels(dut, item, ["BankGroup", "Bank", "Row", "Column"])
+
+
 def test_all_bank_refresh_uses_channel_scope_for_hbm1():
     dram = ramulator.dram.HBM1(org_preset="HBM1_2Gb", timing_preset="HBM1_2Gbps", nREFI=4)
     dut = cs.ControllerUnderTest.make_hbm12(

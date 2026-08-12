@@ -25,7 +25,30 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 #### External libraries ####
 include(FetchContent)
+find_package(Git REQUIRED)
 set(FETCHCONTENT_UPDATES_DISCONNECTED ON CACHE BOOL "Skip updating the external dependencies after populating them for the first time")
+
+function(verify_dependency_revision name source_dir expected_revision)
+  execute_process(
+    COMMAND ${GIT_EXECUTABLE} -C ${source_dir} rev-parse HEAD
+    RESULT_VARIABLE revision_result
+    OUTPUT_VARIABLE actual_revision
+    ERROR_VARIABLE revision_error
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+  )
+  if(NOT revision_result EQUAL 0)
+    message(FATAL_ERROR "${name}: cannot verify dependency revision in ${source_dir}: ${revision_error}")
+  endif()
+  if(NOT actual_revision STREQUAL expected_revision)
+    message(FATAL_ERROR
+      "${name}: dependency revision mismatch in ${source_dir}; "
+      "expected ${expected_revision}, found ${actual_revision}. Remove the stale directory and reconfigure.")
+  endif()
+endfunction()
+
+set(YAML_CPP_REVISION 56e3bb550c91fd7005566f19c079cb7a503223cf)
+set(FMT_REVISION e69e5f977d458f2650bb346dadf2ad30c5320281)
+set(NANOBIND_REVISION 0f9ce749b257fdfe701edb3cf6f7027ba029434a)
 
 message("Configuring yaml-cpp...")
 option(YAML_CPP_BUILD_CONTRIB "Enable yaml-cpp contrib in library" OFF)
@@ -34,10 +57,11 @@ option(YAML_BUILD_SHARED_LIBS "Build yaml-cpp as a shared library" OFF)
 FetchContent_Declare(
   yaml-cpp                             
   GIT_REPOSITORY https://github.com/jbeder/yaml-cpp.git
-  GIT_TAG        yaml-cpp-0.9.0                        
+  GIT_TAG        ${YAML_CPP_REVISION}
   SOURCE_DIR     ${CMAKE_CURRENT_SOURCE_DIR}/ext/yaml-cpp
 )
 FetchContent_MakeAvailable(yaml-cpp)
+verify_dependency_revision(yaml-cpp ${yaml-cpp_SOURCE_DIR} ${YAML_CPP_REVISION})
 include_directories(${yaml-cpp_SOURCE_DIR}/include)
 message("Done configuring yaml-cpp.")
 
@@ -45,10 +69,11 @@ message("Configuring fmt...")
 FetchContent_Declare(
   fmt
   GIT_REPOSITORY https://github.com/fmtlib/fmt.git
-  GIT_TAG        10.2.1
+  GIT_TAG        ${FMT_REVISION}
   SOURCE_DIR     ${CMAKE_CURRENT_SOURCE_DIR}/ext/fmt
 )
 FetchContent_MakeAvailable(fmt)
+verify_dependency_revision(fmt ${fmt_SOURCE_DIR} ${FMT_REVISION})
 include_directories(${fmt_SOURCE_DIR}/include)
 message("Done configuring fmt.")
 
@@ -64,10 +89,11 @@ if(RAMULATOR_PYTHON_BINDINGS)
   FetchContent_Declare(
     nanobind
     GIT_REPOSITORY https://github.com/wjakob/nanobind.git
-    GIT_TAG        v2.4.0
+    GIT_TAG        ${NANOBIND_REVISION}
     SOURCE_DIR     ${CMAKE_CURRENT_SOURCE_DIR}/ext/nanobind
   )
   FetchContent_MakeAvailable(nanobind)
+  verify_dependency_revision(nanobind ${nanobind_SOURCE_DIR} ${NANOBIND_REVISION})
   message("Done configuring nanobind.")
 endif()
 ##################################
@@ -111,7 +137,7 @@ if(RAMULATOR_PYTHON_BINDINGS)
     COMMAND ${CMAKE_COMMAND} -E env
       "PYTHONPATH=${CMAKE_CURRENT_SOURCE_DIR}/python"
       ${Python_EXECUTABLE} -m ramulator codegen
-      LPDDR5 LPDDR5PIM
+      LPDDR5 LPDDR5PIM LPDDR6 LPDDR6PIM
       --src-dir ${CMAKE_CURRENT_SOURCE_DIR}/src/ramulator
     WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
     COMMENT "Running ramulator codegen..."
@@ -122,6 +148,8 @@ if(RAMULATOR_PYTHON_BINDINGS)
         -i
         ${CMAKE_CURRENT_SOURCE_DIR}/src/ramulator/dram/impl/LPDDR5.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/ramulator/dram/impl/LPDDR5PIM.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/ramulator/dram/impl/LPDDR6.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/ramulator/dram/impl/LPDDR6PIM.cpp
       WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
       COMMENT "Formatting generated C++ files..."
     )

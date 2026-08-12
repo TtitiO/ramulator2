@@ -1,10 +1,4 @@
-"""Validated public experiment manifests for PIMScope.
-
-This module is deliberately independent of the compiled Ramulator extension so
-researchers can validate and inspect manifests before building or simulating.
-"""
-
-from __future__ import annotations
+"""Validated public experiment manifests for PIMScope."""
 
 import copy
 import hashlib
@@ -14,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from ramulator.pimscope.capabilities import require_supported_pim_backend
-from ramulator.pimscope.compat import canonicalize_legacy_pim_config
+from ramulator.pimscope.workloads import SUPPORTED_MODEL_PHASES
 
 MANIFEST_SCHEMA_VERSION = 1
 
@@ -47,6 +41,7 @@ DEFAULT_HARDWARE = {
 }
 
 DEFAULT_WORKLOAD = {
+    "workload_type": "structured_transformer_surrogate",
     "model": "opt-125m",
     "datatype": "int8",
     "phase": "decode",
@@ -58,9 +53,13 @@ DEFAULT_WORKLOAD = {
     "seed": 12345,
     "max_inflight_requests": 16,
     "interleave_depth": 4,
+    "max_expanded_records": 100_000_000_000,
+    "max_trace_bytes": 1_073_741_824,
+    "simulation_timeout_seconds": 86400,
 }
 
 SUPPORTED_TOP_LEVEL_FIELDS = {"schema_version", "experiment", "hardware", "workload", "output"}
+COMPOSED_MANIFEST_FIELDS = {"hardware_file", "workload_file"}
 SUPPORTED_HARDWARE_FIELDS = {
     "dram_class",
     "org_preset",
@@ -73,7 +72,7 @@ SUPPORTED_HARDWARE_FIELDS = {
     "topology",
     "frontend_clock_ratio",
 }
-SUPPORTED_WORKLOAD_FIELDS = set(DEFAULT_WORKLOAD) | {"datatype"}
+SUPPORTED_WORKLOAD_FIELDS = set(DEFAULT_WORKLOAD) | {"datatype", "workload_options"}
 SUPPORTED_OUTPUT_FIELDS = {"path"}
 SUPPORTED_MODEL_SPEC_FIELDS = {
     "name",
@@ -115,12 +114,13 @@ SUPPORTED_WEIGHT_RESIDENCY = {"resident", "full_preload"}
 SUPPORTED_MAC_MODES = {"per_kind", "per_bank", "all_bank"}
 SUPPORTED_SCHEDULE_POLICIES = {"serialized", "overlap_independent_heads"}
 SUPPORTED_PIM_DATATYPES = {"int8", "fp16", "int16", "bf16"}
+SUPPORTED_PIM_DRAM_CLASSES = {"LPDDR5PIM", "LPDDR6PIM"}
 SUPPORTED_WORKLOAD_DATATYPES = {"int8", "fp16", "bf16"}
 SUPPORTED_FFN_VARIANTS = {"swiglu_3proj", "geglu_3proj", "relu_2proj"}
-SUPPORTED_PIM_EXECUTION_MODELS = {"shared_block_serial", "subbank_overlap_experimental"}
+SUPPORTED_PIM_EXECUTION_MODELS = {"shared_block_serial"}
 
-# Public manifest fields accepted by ramulator.dram.LPDDR5PIM. Compatibility
-# aliases/deprecated scale parameters are intentionally excluded.
+# Public manifest fields accepted by the PIM resource contract. Deprecated
+# aliases and scale parameters are not part of the manifest.
 SUPPORTED_PIM_FIELDS = {
     "pim_blocks_per_bank",
     "pim_banks_per_block",
@@ -222,8 +222,6 @@ def _load_text_manifest(path: Path) -> dict[str, Any]:
 def _resolve_hardware(raw: Any) -> dict[str, Any]:
     hardware = copy.deepcopy(DEFAULT_HARDWARE)
     supplied = copy.deepcopy(_expect_mapping(raw or {}, "hardware"))
-    if isinstance(supplied.get("pim"), dict):
-        supplied["pim"] = canonicalize_legacy_pim_config(supplied["pim"])
     _reject_unknown(supplied, SUPPORTED_HARDWARE_FIELDS, "hardware")
 
     for field in ("dram_class", "org_preset", "timing_preset", "frontend_clock_ratio"):
@@ -259,6 +257,11 @@ def _resolve_hardware(raw: Any) -> dict[str, Any]:
         )
 
     require_supported_pim_backend(hardware["dram_class"])
+    if hardware["dram_class"] not in SUPPORTED_PIM_DRAM_CLASSES:
+        _fail(
+            "hardware.dram_class",
+            f"supported PIM DRAM classes are {sorted(SUPPORTED_PIM_DRAM_CLASSES)}",
+        )
     for field in ("org_preset", "timing_preset"):
         if not isinstance(hardware[field], str) or not hardware[field]:
             _fail(f"hardware.{field}", "must be a non-empty string")
@@ -335,6 +338,19 @@ def _resolve_hardware(raw: Any) -> dict[str, Any]:
         "pim_ops_per_mac",
         "pim_ops_per_block_issue",
         "pim_ops_per_request",
+    ):
+        if field in pim:
+            _positive_int(pim[field], f"hardware.pim.{field}")
+    if (
+        "pim_ops_per_block_issue" in pim
+        and "pim_ops_per_request" in pim
+        and pim["pim_ops_per_block_issue"] != pim["pim_ops_per_request"]
+    ):
+        _fail(
+            "hardware.pim.pim_ops_per_request",
+            "must equal pim_ops_per_block_issue",
+        )
+    for field in (
         "pim_compute_energy_pJ_per_mac",
         "pim_array_local_energy_pJ",
         "pim_cell_to_pim_energy_pJ_per_256b",
@@ -346,6 +362,11 @@ def _resolve_hardware(raw: Any) -> dict[str, Any]:
             _nonnegative_number(pim[field], f"hardware.pim.{field}")
     for field, value in hardware["org_overrides"].items():
         _positive_int(value, f"hardware.org_overrides.{field}")
+    if hardware["org_overrides"].get("rank", 1) not in {1, 2}:
+        _fail(
+            "hardware.org_overrides.rank",
+            "only one- and two-rank organizations are currently validated",
+        )
     for field, value in hardware["timing_overrides"].items():
         _nonnegative_number(value, f"hardware.timing_overrides.{field}")
     return hardware
@@ -353,8 +374,9 @@ def _resolve_hardware(raw: Any) -> dict[str, Any]:
 
 def _resolve_model(value: Any) -> str | dict[str, Any]:
     if isinstance(value, str):
-        if not value:
-            _fail("workload.model", "must be a non-empty built-in model key")
+        if value not in SUPPORTED_MODEL_PHASES:
+            supported = ", ".join(SUPPORTED_MODEL_PHASES)
+            _fail("workload.model", f"unsupported built-in model; choose one of: {supported}")
         return value
     model = copy.deepcopy(_expect_mapping(value, "workload.model"))
     _reject_unknown(model, SUPPORTED_MODEL_SPEC_FIELDS, "workload.model")
@@ -386,6 +408,13 @@ def _resolve_workload(raw: Any) -> dict[str, Any]:
     workload.update(copy.deepcopy(supplied))
     workload["model"] = _resolve_model(workload["model"])
     workload["datatype"] = workload.get("datatype", "int8")
+    if workload["workload_type"] != "structured_transformer_surrogate":
+        _fail(
+            "workload.workload_type",
+            "only structured_transformer_surrogate is supported in the release",
+        )
+    if "workload_options" in supplied:
+        _expect_mapping(supplied["workload_options"], "workload.workload_options")
 
     _choice(workload["datatype"], SUPPORTED_WORKLOAD_DATATYPES, "workload.datatype")
     _choice(workload["phase"], SUPPORTED_PHASES, "workload.phase")
@@ -401,10 +430,18 @@ def _resolve_workload(raw: Any) -> dict[str, Any]:
     _nonnegative_int(workload["seed"], "workload.seed")
     _positive_int(workload["max_inflight_requests"], "workload.max_inflight_requests")
     _positive_int(workload["interleave_depth"], "workload.interleave_depth")
+    _positive_int(workload["max_expanded_records"], "workload.max_expanded_records")
+    _positive_int(workload["max_trace_bytes"], "workload.max_trace_bytes")
+    _nonnegative_int(workload["simulation_timeout_seconds"], "workload.simulation_timeout_seconds")
     if workload["phase"] == "prefill" and workload["schedule_policy"] != "serialized":
         _fail("workload.schedule_policy", "prefill currently supports only 'serialized'")
-    if workload["model"] == "mixtral-8x7b" and workload["phase"] != "decode":
-        _fail("workload.phase", "Mixtral-8x7B currently supports decode only")
+    if isinstance(workload["model"], str):
+        phases = SUPPORTED_MODEL_PHASES[workload["model"]]
+        if workload["phase"] not in phases:
+            _fail(
+                "workload.phase",
+                f"{workload['model']} supports only: {', '.join(phases)}",
+            )
     if isinstance(workload["model"], dict) and workload["schedule_policy"] != "serialized":
         _fail(
             "workload.schedule_policy",
@@ -430,7 +467,6 @@ def resolve_experiment_manifest(
     output_path = output.get("path", "results/custom/result.json")
     if not isinstance(output_path, str) or not output_path.strip():
         _fail("output.path", "must be a non-empty path string")
-
     hardware = _resolve_hardware(raw.get("hardware", {}))
     workload = _resolve_workload(raw.get("workload", {}))
     if hardware["pim"]["pim_datatype"] != workload["datatype"]:
@@ -448,11 +484,17 @@ def resolve_experiment_manifest(
     return ResolvedExperiment(manifest=manifest, source=source)
 
 
+def _load_section_file(path: Path, section: str) -> dict[str, Any]:
+    payload = _load_text_manifest(path)
+    if set(payload) == {section}:
+        payload = _expect_mapping(payload[section], section)
+    return payload
+
+
 def load_experiment_manifest(path: str | Path) -> ResolvedExperiment:
     manifest_path = Path(path).expanduser().resolve()
-    return resolve_experiment_manifest(
-        _load_text_manifest(manifest_path), source=str(manifest_path)
-    )
+    raw = load_raw_manifest(manifest_path)
+    return resolve_experiment_manifest(raw, source=str(manifest_path))
 
 
 def apply_overrides(raw: dict[str, Any], overrides: list[str]) -> dict[str, Any]:
@@ -481,5 +523,20 @@ def apply_overrides(raw: dict[str, Any], overrides: list[str]) -> dict[str, Any]
 
 
 def load_raw_manifest(path: str | Path) -> dict[str, Any]:
+    """Load an experiment, resolving optional hardware/workload section files."""
     manifest_path = Path(path).expanduser().resolve()
-    return _load_text_manifest(manifest_path)
+    raw = _load_text_manifest(manifest_path)
+    unknown = sorted(set(raw) - SUPPORTED_TOP_LEVEL_FIELDS - COMPOSED_MANIFEST_FIELDS)
+    if unknown:
+        _fail(str(manifest_path), f"unknown field(s): {', '.join(unknown)}")
+    for section in ("hardware", "workload"):
+        reference = raw.pop(f"{section}_file", None)
+        if reference is None:
+            continue
+        if section in raw:
+            _fail(section, f"cannot be used with {section}_file")
+        if not isinstance(reference, str) or not reference.strip():
+            _fail(f"{section}_file", "must be a non-empty path string")
+        section_path = (manifest_path.parent / reference).resolve()
+        raw[section] = _load_section_file(section_path, section)
+    return raw

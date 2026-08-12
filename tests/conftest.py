@@ -1,4 +1,6 @@
-"""Pytest configuration for Ramulator 2 tests."""
+"""Pytest configuration and explicit test-suite tiers for Ramulator 2."""
+
+import pytest
 
 
 def pytest_addoption(parser):
@@ -7,6 +9,12 @@ def pytest_addoption(parser):
         action="store_true",
         default=False,
         help="Include reference lines and metrics in latency-throughput plots",
+    )
+    parser.addoption(
+        "--run-full",
+        action="store_true",
+        default=False,
+        help="Run long refresh-enabled latency/throughput sweeps",
     )
 
 
@@ -22,3 +30,12 @@ def pytest_configure(config):
     config.addinivalue_line(
         "markers", "controller_scheduling: Controller request scheduling tests"
     )
+
+
+def pytest_collection_modifyitems(config, items):
+    if config.getoption("--run-full"):
+        return
+    skip = pytest.mark.skip(reason="long suite; pass --run-full to run")
+    for item in items:
+        if "latency_throughput_full" in item.keywords:
+            item.add_marker(skip)

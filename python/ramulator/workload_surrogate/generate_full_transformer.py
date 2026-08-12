@@ -454,7 +454,7 @@ def _attention_head_group_size(manifest: dict) -> int:
 
 
 def ffn_variant(manifest: dict) -> str:
-    """Return the FFN topology variant, defaulting legacy manifests to SwiGLU."""
+    """Return the FFN topology variant, defaulting to SwiGLU."""
     return str(manifest.get("ffn_variant", FFN_VARIANT_SWIGLU_3PROJ))
 
 

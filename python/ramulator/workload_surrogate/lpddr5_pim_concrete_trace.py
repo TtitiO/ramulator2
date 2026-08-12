@@ -1,8 +1,9 @@
-"""Native LPDDR5-PIM concrete opcode trace helpers.
+"""Native LPDDR PIM concrete opcode trace helpers.
 
-This module is intentionally separate from ``structured_trace.py``.  The
+This module is intentionally separate from ``structured_trace.py``. The
 structured trace surface preserves semantic workload-surrogate records, while
-this surface is backend-specific command replay for LPDDR5-PIM validation.
+this surface is backend-specific command replay for LPDDR5PIM and LPDDR6PIM
+validation.
 """
 
 from __future__ import annotations
@@ -15,8 +16,12 @@ from typing import Any, Mapping
 from ramulator.dram.addressing import addr_vec_from_byte_address as _map_byte_address
 from ramulator.dram.addressing import validate_addr_vec
 
-CONCRETE_SCHEMA_VERSION = "lpddr5-pim-opcode-v0.2"
-CONCRETE_GENERATOR_VERSION = "lpddr5-pim-opcode-generator-v0.1"
+CONCRETE_SCHEMA_VERSIONS = {
+    "LPDDR5PIM": "lpddr5-pim-opcode-v0.2",
+    "LPDDR6PIM": "lpddr6-pim-opcode-v0.1",
+}
+CONCRETE_SCHEMA_VERSION = CONCRETE_SCHEMA_VERSIONS["LPDDR5PIM"]
+CONCRETE_GENERATOR_VERSION = "lpddr-pim-opcode-generator-v0.2"
 CONCRETE_OPCODES = {"READ", "WRITE", "SB", "HAB", "HAB_PIM", "PIM_BCAST", "PIM_MAC", "PIM_MAC_AB"}
 MODE_OPCODES = {"SB", "HAB", "HAB_PIM"}
 REQUEST_OPCODES = {"READ", "WRITE", "PIM_BCAST", "PIM_MAC", "PIM_MAC_AB"}
@@ -33,7 +38,7 @@ FORBIDDEN_RAW_ATTACC_OPCODES = {
     "PIM_ACT_AB",
 }
 REQUIRED_BOUNDARY_CLAIMS = [
-    "native-lpddr5-pim-concrete-opcode-replay",
+    "native-lpddr-pim-concrete-opcode-replay",
     "backend-specific-command-validation",
     "simulator-diagnostic",
     "non-silicon-calibrated",
@@ -80,7 +85,7 @@ def addr_vec_from_byte_address(
 def concrete_provenance(
     *,
     source_kind: str = "generated",
-    manifest_name: str = "lpddr5_pim_concrete_minimal",
+    manifest_name: str = "lpddr_pim_concrete_minimal",
 ) -> dict:
     return {
         "source_kind": source_kind,
@@ -89,25 +94,45 @@ def concrete_provenance(
         "claim_boundary": list(REQUIRED_BOUNDARY_CLAIMS),
         "non_claims": list(DEFAULT_NON_CLAIMS),
         "notes": (
-            "backend-specific native LPDDR5-PIM opcode replay; PIM_BCAST is a bounded all-bank "
+            "backend-specific native LPDDR PIM opcode replay; PIM_BCAST is a bounded all-bank "
             "setup abstraction rather than a vendor-faithful payload-source or timing model; "
             "semantic JSONL remains separate"
         ),
     }
 
 
-def build_header() -> dict:
-    """Build the v0.2 trace header envelope (asserted once per file)."""
-    header = {"schema_version": CONCRETE_SCHEMA_VERSION}
-    validate_header(header)
+def build_header(*, dram_class: str = "LPDDR5PIM") -> dict:
+    """Build the backend-specific trace header envelope."""
+    if dram_class not in CONCRETE_SCHEMA_VERSIONS:
+        raise ValueError(f"Unsupported PIM trace backend: {dram_class}")
+    header = {
+        "schema_version": CONCRETE_SCHEMA_VERSIONS[dram_class],
+        "dram_class": dram_class,
+    }
+    validate_header(header, expected_dram_class=dram_class)
     return header
 
 
-def validate_header(header: dict) -> None:
-    if header.get("schema_version") != CONCRETE_SCHEMA_VERSION:
+def validate_header(header: dict, *, expected_dram_class: str | None = None) -> None:
+    if not isinstance(header, dict):
+        raise ValueError("Concrete opcode trace header must be a JSON object")
+    if "dram_class" not in header:
+        raise ValueError("Concrete opcode trace header missing required field: dram_class")
+    if "schema_version" not in header:
+        raise ValueError("Concrete opcode trace header missing required field: schema_version")
+    dram_class = header["dram_class"]
+    if dram_class not in CONCRETE_SCHEMA_VERSIONS:
+        raise ValueError(f"Unsupported concrete opcode dram_class: {dram_class}")
+    if expected_dram_class is not None and dram_class != expected_dram_class:
+        raise ValueError(
+            f"Concrete opcode dram_class {dram_class!r} does not match "
+            f"expected backend {expected_dram_class!r}"
+        )
+    expected_schema = CONCRETE_SCHEMA_VERSIONS[dram_class]
+    if header.get("schema_version") != expected_schema:
         raise ValueError(
             "Unsupported concrete opcode schema_version: "
-            f"{header.get('schema_version')}"
+            f"{header.get('schema_version')}; expected {expected_schema} for {dram_class}"
         )
 
 
@@ -126,11 +151,11 @@ def validate_record(record: dict, *, address_layout: Mapping[str, Any] | None = 
     opcode = record["opcode"]
     if opcode in FORBIDDEN_RAW_ATTACC_OPCODES:
         raise ValueError(
-            "Raw AttAcc opcode is not part of the LPDDR5-PIM concrete schema: "
+            "Raw AttAcc opcode is not part of the LPDDR PIM concrete schema: "
             f"{opcode}"
         )
     if opcode not in CONCRETE_OPCODES:
-        raise ValueError(f"Unsupported LPDDR5-PIM concrete opcode: {opcode}")
+        raise ValueError(f"Unsupported LPDDR PIM concrete opcode: {opcode}")
     repeat = record["repeat"]
     if isinstance(repeat, bool) or not isinstance(repeat, int):
         raise ValueError("Concrete opcode repeat must be an integer")
@@ -305,14 +330,51 @@ def validate_record(record: dict, *, address_layout: Mapping[str, Any] | None = 
 
 
 
+def _record_rank_ids(
+    record: dict, address_layout: Mapping[str, Any] | None
+) -> set[int]:
+    """Return every rank touched by a concrete record.
+
+    Compact interleaved PIM_MAC records can expand across ranks even though
+    their base ``addr_vec`` contains only one coordinate. Sequence validation
+    must therefore inspect the flattened bank sequence rather than validating
+    only the base vector. The index-1 fallback preserves validation for older
+    in-memory records without a layout while retaining the canonical
+    Channel/Rank prefix required by this trace format.
+    """
+    if address_layout is None:
+        rank_level = 1
+    else:
+        level_names = list(address_layout["level_names"])
+        rank_level = level_names.index("Rank")
+    ranks = {int(record["addr_vec"][rank_level])}
+    if record["opcode"] != "PIM_MAC" or not record.get("bank_sequence"):
+        return ranks
+
+    positions = list(record.get("bank_positions", []))
+    counts = list(record.get("bank_counts", []))
+    if rank_level not in positions:
+        return ranks
+    rank_position_index = positions.index(rank_level)
+    ranks.clear()
+    for flat_bank in record["bank_sequence"]:
+        remaining = int(flat_bank)
+        coordinates = [0] * len(positions)
+        for index in range(len(positions) - 1, -1, -1):
+            coordinates[index] = remaining % int(counts[index])
+            remaining //= int(counts[index])
+        ranks.add(coordinates[rank_position_index])
+    return ranks
+
+
 def validate_sequence(
     records: list[dict],
     *,
     address_layout: Mapping[str, Any] | None = None,
     max_expanded_records: int | None = None,
 ) -> None:
-    mode = "SB"
-    saw_bcast_since_hab = False
+    rank_modes: dict[int, str] = {}
+    rank_bcasts: dict[int, bool] = {}
     expanded_records = 0
     if max_expanded_records is None:
         max_expanded_records = int(os.environ.get(MAX_EXPANDED_RECORDS_ENV, MAX_EXPANDED_RECORDS))
@@ -329,35 +391,44 @@ def validate_sequence(
                 f"{max_expanded_records}"
             )
         opcode = record["opcode"]
+        rank_ids = _record_rank_ids(record, address_layout)
         if opcode in {"READ", "WRITE"}:
-            if mode != "SB":
+            if any(rank_modes.get(rank_id, "SB") != "SB" for rank_id in rank_ids):
                 raise ValueError(f"Concrete opcode record {index} {opcode} requires SB mode")
             continue
         if opcode == "SB":
-            mode = "SB"
-            saw_bcast_since_hab = False
+            for rank_id in rank_ids:
+                rank_modes[rank_id] = "SB"
+                rank_bcasts[rank_id] = False
         elif opcode == "HAB":
-            mode = "HAB"
-            saw_bcast_since_hab = False
+            for rank_id in rank_ids:
+                rank_modes[rank_id] = "HAB"
+                rank_bcasts[rank_id] = False
         elif opcode == "HAB_PIM":
-            if not saw_bcast_since_hab:
+            if any(not rank_bcasts.get(rank_id, False) for rank_id in rank_ids):
                 raise ValueError(
                     f"Concrete opcode record {index} HAB_PIM requires a preceding "
                     "PIM_BCAST in HAB mode"
                 )
-            mode = "HAB_PIM"
+            for rank_id in rank_ids:
+                rank_modes[rank_id] = "HAB_PIM"
         elif opcode == "PIM_BCAST":
-            if mode != "HAB":
+            if any(rank_modes.get(rank_id, "SB") != "HAB" for rank_id in rank_ids):
                 raise ValueError(f"Concrete opcode record {index} PIM_BCAST requires HAB mode")
-            saw_bcast_since_hab = True
+            for rank_id in rank_ids:
+                rank_bcasts[rank_id] = True
         elif opcode == "PIM_MAC_AB":
-            if mode != "HAB_PIM" or not saw_bcast_since_hab:
+            if any(
+                rank_modes.get(rank_id, "SB") != "HAB_PIM"
+                or not rank_bcasts.get(rank_id, False)
+                for rank_id in rank_ids
+            ):
                 raise ValueError(
                     f"Concrete opcode record {index} PIM_MAC_AB requires HAB_PIM "
                     "mode after PIM_BCAST"
                 )
         elif opcode == "PIM_MAC":
-            if mode != "SB":
+            if any(rank_modes.get(rank_id, "SB") != "SB" for rank_id in rank_ids):
                 raise ValueError(f"Concrete opcode record {index} PIM_MAC requires SB mode")
 
 
@@ -395,8 +466,9 @@ def write_jsonl(
     *,
     address_layout: Mapping[str, Any] | None = None,
     max_expanded_records: int | None = None,
+    dram_class: str = "LPDDR5PIM",
 ) -> None:
-    header = build_header()
+    header = build_header(dram_class=dram_class)
     slim_records = [slim_record(record) for record in records]
     validate_sequence(
         slim_records,
@@ -415,6 +487,7 @@ def read_jsonl(
     *,
     address_layout: Mapping[str, Any] | None = None,
     max_expanded_records: int | None = None,
+    expected_dram_class: str | None = None,
 ) -> tuple[dict, list[dict]]:
     """Read a v0.2 trace: returns (validated header, validated slim records)."""
     lines = [
@@ -424,9 +497,24 @@ def read_jsonl(
     ]
     if not lines:
         raise ValueError("Concrete opcode trace is empty")
-    header = json.loads(lines[0])
-    validate_header(header)
-    records = [json.loads(line) for line in lines[1:]]
+    try:
+        header = json.loads(lines[0])
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Concrete opcode trace line 1 is invalid JSON: {exc.msg}") from exc
+    validate_header(header, expected_dram_class=expected_dram_class)
+    records = []
+    for line_number, line in enumerate(lines[1:], start=2):
+        try:
+            record = json.loads(line)
+        except json.JSONDecodeError as exc:
+            raise ValueError(
+                f"Concrete opcode trace line {line_number} is invalid JSON: {exc.msg}"
+            ) from exc
+        if not isinstance(record, dict):
+            raise ValueError(
+                f"Concrete opcode trace line {line_number} record must be a JSON object"
+            )
+        records.append(record)
     validate_sequence(
         records,
         address_layout=address_layout,

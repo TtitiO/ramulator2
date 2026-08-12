@@ -1,10 +1,4 @@
-"""Public PIMScope experiment API built on Ramulator 2.1.
-
-This package contains reusable manifest validation, hardware construction,
-concrete-trace replay, and workload-surrogate experiment execution.  Paper
-matrices, aggregation, plotting, and release checks remain in the parent
-PIMScope repository.
-"""
+"""Public PIMScope experiment API."""
 
 from ramulator.pimscope.backend import (
     count_concrete_opcodes,
@@ -26,7 +20,6 @@ from ramulator.pimscope.capabilities import (
     pim_backend_capabilities,
     require_supported_pim_backend,
 )
-from ramulator.pimscope.compat import canonicalize_legacy_pim_config, canonicalize_legacy_result
 from ramulator.pimscope.config import (
     MANIFEST_SCHEMA_VERSION,
     ResolvedExperiment,
@@ -36,10 +29,12 @@ from ramulator.pimscope.config import (
     resolve_experiment_manifest,
 )
 from ramulator.pimscope.experiment import (
+    estimate_concrete_trace,
     retarget_semantic_banks,
     run_experiment,
     validate_backend,
 )
+from ramulator.pimscope.runner import run_single
 from ramulator.pimscope.schema import (
     AGGREGATE_SCHEMA_NAMES,
     AGGREGATE_SCHEMA_VERSION,
@@ -50,14 +45,13 @@ from ramulator.pimscope.schema import (
     validate_result,
     validate_trace_file,
 )
+from ramulator.pimscope.workloads import SUPPORTED_MODEL_PHASES, generate_workload
 
 __all__ = [
     "MANIFEST_SCHEMA_VERSION",
     "PIM_BACKEND_CAPABILITIES",
     "pim_backend_capabilities",
     "require_supported_pim_backend",
-    "canonicalize_legacy_pim_config",
-    "canonicalize_legacy_result",
     "AGGREGATE_SCHEMA_NAMES",
     "AGGREGATE_SCHEMA_VERSION",
     "RESULT_SCHEMA_NAME",
@@ -72,6 +66,7 @@ __all__ = [
     "load_raw_manifest",
     "resolve_experiment_manifest",
     "validate_backend",
+    "estimate_concrete_trace",
     "retarget_semantic_banks",
     "run_experiment",
     "count_concrete_opcodes",
@@ -87,4 +82,7 @@ __all__ = [
     "prefill_formula",
     "replay_concrete_trace",
     "time_unit_ns",
+    "run_single",
+    "generate_workload",
+    "SUPPORTED_MODEL_PHASES",
 ]

@@ -47,8 +47,13 @@ class DRAMDevice {
   // Row open check — flat bank lookup (always single bank)
   bool check_node_open(int command, const AddrVec_t& addr_vec, Clk_t clk);
 
-  // Compute flat bank index from addr_vec
   int get_flat_bank_id(const AddrVec_t& addr_vec) const;
+  int get_banks_per_rank() const;
+  int get_rank_id_for_flat_bank(int flat_bank_id) const;
+  int get_rank_local_bank_id(int flat_bank_id) const;
+  int get_rank_local_group_id(int flat_bank_id, int banks_per_group) const;
+  int get_global_rank_local_group_id(int flat_bank_id, int banks_per_group) const;
+  std::vector<int> get_rank_local_group_banks(int flat_bank_id, int banks_per_group) const;
 
   void finalize_power(Clk_t clk);
 

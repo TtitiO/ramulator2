@@ -56,8 +56,8 @@ If you use Ramulator 2.1/2.0 in your work, please use the following citations:
 - `python/`
   Python wrappers for easy and scriptable configuration of Ramulator. The
   maintained PIMScope fork also provides the documented `ramulator.pimscope`
-  API for validated LPDDR5-PIM manifests, component construction, workload
-  lowering, concrete-trace replay, and structured experiment results.
+  API for validated LPDDR5PIM/LPDDR6PIM manifests, component construction,
+  workload lowering, concrete-trace replay, and structured experiment results.
 - `examples/`
   Ready-to-run example configurations and traces.
 - `tests/`
@@ -106,10 +106,11 @@ python3 examples/example_config.py
 
 You should see some example statistics being printed. You can head to Section 3 directly for detailed explanations and instructions on how to use and configure Ramulator 2.1 if you do not need to build Ramulator 2.1 in your custom environment.
 
-### 2.3 Public LPDDR5-PIM experiment API
+### 2.3 Public LPDDR PIM experiment API
 
 After installing the Python package and building the runtime extension, custom
-LPDDR5-PIM experiments can use the simulator-owned API directly:
+LPDDR5PIM or experimental LPDDR6PIM experiments can use the simulator-owned API
+directly:
 
 ```python
 from ramulator.pimscope import load_experiment_manifest, run_experiment
@@ -137,16 +138,15 @@ figures, and release checks remain in the parent PIMScope repository. New
 simulator functionality should be implemented in this package or in the
 underlying Ramulator component packages, not in a paper script.
 
-The current PIMScope backend supports `LPDDR5PIM` only. This repository also
-contains a generic `LPDDR6` DRAM standard, but that model does not provide
-LPDDR6 PIM commands, a compatible PIM controller/frontend, or validated PIM
-trace and power semantics. The parent release checklist tracks a deliberate
-LPDDR6-PIM adaptation; users must not substitute `LPDDR6` behind the
-LPDDR5-PIM controller and interpret the result as LPDDR6-PIM.
+The PIMScope backend supports `LPDDR5PIM` and an experimental `LPDDR6PIM`
+backend. Generic `LPDDR6` is not interchangeable with `LPDDR6PIM`; the
+LPDDR6-PIM path has a standard-specific controller, DRAM model, concrete trace
+schema, and LPDDR6 short/long access timing. Standard LPDDR6 background/command
+power is not yet available, and the backend is not used by paper artifacts.
+Users must not substitute generic `LPDDR6` behind a PIM controller.
 
 The parent repository's `pimscope` command is a thin file/argument adapter over
-this API. The old `scripts.lib.*` imports are compatibility shims for one
-migration release and are deprecated.
+this API.
 
 ### 2.4 Build Requirements
 
@@ -162,6 +162,11 @@ migration release and are deprecated.
 - `fmt` — C++ print formatting
 - `nanobind` — Python-C++ bindings (only when `RAMULATOR_PYTHON_BINDINGS=ON`)
 - `argparse` — command-line argument parsing (vendored in `ext/`)
+
+CMake pins yaml-cpp, fmt, and nanobind to immutable commits. A pre-populated
+`ext/` checkout must match the configured commit or configuration fails with a
+removal/reconfigure instruction. For offline builds, pre-populate these exact
+checkouts before configuring; CMake does not update populated dependencies.
 
 **Python dev dependencies** (install with `pip install -r requirements-dev.txt`):
 
@@ -451,7 +456,7 @@ The timing/resource contract is:
 - `nPIM_MAC_II` controls the earliest legal spacing between `PIM_MAC` command launches.
 - A per-bank `PIM_MAC` completes after `pim_mac_pipeline_latency_cycles + pim_movement_cycles + pim_writeback_cycles` controller cycles. Command issue and request completion are distinct events.
 - `pim_blocks_per_bank` is the bank-local execution-slot capacity; each request occupies `pim_slots_per_request` slots until completion.
-- `shared_block_serial` permits only one in-flight per-bank MAC in each group of `pim_banks_per_block` banks. `subbank_overlap_experimental` removes that shared-block serialization but retains timing, dependency, and slot constraints.
+- `shared_block_serial` permits only one in-flight per-bank MAC in each group of `pim_banks_per_block` banks. Flat bank IDs follow controller hierarchy order through `Bank`; grouping restarts at every rank, so every bank belongs to exactly one shared block and a block never crosses a rank boundary. Multi-controller/channel grouping is not supported. `subbank_overlap_experimental` removes that shared-block serialization but retains timing, dependency, and slot constraints.
 - `PIM_MAC_AB` represents one rank-scoped all-bank MAC. Its modeled completion latency is the per-bank completion latency multiplied by `pim_banks_per_block`, reflecting serial sharing inside each shared PIM block while blocks operate in parallel.
 - `PIM_BCAST` is a bounded all-bank setup/load abstraction. The required mode sequence is `HAB -> PIM_BCAST -> HAB_PIM -> PIM_MAC_AB`; `SB` returns to host single-bank mode. Host reads/writes do not issue while the rank is in an all-bank mode.
 - Refresh and closing commands wait for affected in-flight PIM work. `AllBank` refresh uses rank scope for `LPDDR5PIM`.

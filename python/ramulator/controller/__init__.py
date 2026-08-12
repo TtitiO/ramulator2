@@ -12,6 +12,7 @@ from .hbm34 import HBM34
 from .lpddr5 import LPDDR5
 from .lpddr5_pim import LPDDR5PIM
 from .lpddr6 import LPDDR6
+from .lpddr6_pim import LPDDR6PIM
 from .prac import PRAC
 
-__all__ = ['BlockHammer', 'GDDR7', 'GenericDDR', 'HBM12', 'HBM34', 'LPDDR5', 'LPDDR5PIM', 'LPDDR6', 'PRAC']
+__all__ = ['BlockHammer', 'GDDR7', 'GenericDDR', 'HBM12', 'HBM34', 'LPDDR5', 'LPDDR5PIM', 'LPDDR6', 'LPDDR6PIM', 'PRAC']

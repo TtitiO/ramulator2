@@ -1,16 +1,17 @@
-"""Small direct Ramulator 2.1 runner used for smoke and observability checks."""
-
-from __future__ import annotations
+"""Direct Ramulator runner for smoke and observability checks."""
 
 import copy
 import csv
 import tempfile
 from collections import Counter
 from pathlib import Path
+from typing import Literal
 
 from ramulator.dram.addressing import extract_dram_layout
+from ramulator.pimscope.backend import create_dram, create_memory_system
 
 DEFAULT_CFG = {
+    "dram_class": "LPDDR5PIM",
     "org_preset": "LPDDR5_8Gb_x16",
     "timing_preset": "LPDDR5_6400",
     "dram_kwargs": {"pim_datatype": "int8"},
@@ -22,12 +23,21 @@ DEFAULT_CFG = {
 COMMANDS_TO_COUNT = [
     "ACT1",
     "ACT2",
+    "CAS",
     "CAS_RD",
     "CAS_WR",
     "RD",
     "WR",
     "RDA",
     "WRA",
+    "RD_S",
+    "WR_S",
+    "RDA_S",
+    "WRA_S",
+    "RD_L",
+    "WR_L",
+    "RDA_L",
+    "WRA_L",
     "SB",
     "HAB",
     "HAB_PIM",
@@ -50,19 +60,6 @@ def _merge_cfg(base: dict, override: dict | None) -> dict:
         else:
             merged[key] = copy.deepcopy(value)
     return merged
-
-
-def _extract_dram_layout(dram) -> dict:
-    """Compatibility wrapper for the canonical hierarchy-aware layout."""
-    return extract_dram_layout(dram)
-
-
-def _make_dram(ramulator, cfg: dict):
-    return ramulator.dram.LPDDR5PIM(
-        org_preset=cfg["org_preset"],
-        timing_preset=cfg["timing_preset"],
-        **cfg.get("dram_kwargs", {}),
-    )
 
 
 def _read_command_counts(path: Path) -> dict[str, int]:
@@ -93,18 +90,19 @@ def _read_command_traces(prefix: Path) -> list[dict]:
     return traces
 
 
-def _attach_plugins(ramulator, tmpdir: Path):
+def _attach_plugins(ramulator, tmpdir: Path, dram):
     counts_path = tmpdir / "command_counts.csv"
     trace_prefix = tmpdir / "command_trace.csv"
+    commands = [command for command in COMMANDS_TO_COUNT if command in type(dram).commands]
     return [
         ramulator.controller_plugin.CommandCounter(
-            commands_to_count=COMMANDS_TO_COUNT, path=str(counts_path)
+            commands_to_count=commands, path=str(counts_path)
         ),
         ramulator.controller_plugin.CmdTraceRecorder(path=str(trace_prefix)),
     ]
 
 
-def _collect_observability(stats: dict, tmpdir: Path, cfg: dict) -> dict:
+def _collect_observability(stats: dict, output_dir: Path, cfg: dict) -> dict:
     ctrl = stats.get("memory_system", {}).get("controller", {})
     selected = {}
     for key in (
@@ -129,28 +127,13 @@ def _collect_observability(stats: dict, tmpdir: Path, cfg: dict) -> dict:
             selected[key] = ctrl[key]
     return {
         "modeled": {
-            "command_counts": _read_command_counts(tmpdir / "command_counts.csv"),
-            "command_traces": _read_command_traces(tmpdir / "command_trace.csv"),
+            "dram_class": cfg.get("dram_class", "LPDDR5PIM"),
+            "command_counts": _read_command_counts(output_dir / "command_counts.csv"),
+            "command_traces": _read_command_traces(output_dir / "command_trace.csv"),
             "controller_stats": selected,
             "pim_datatype": cfg.get("dram_kwargs", {}).get("pim_datatype", "unknown"),
         }
     }
-
-
-def _make_controller_and_mem(ramulator, dram, plugins):
-    ctrl = ramulator.controller.LPDDR5PIM(
-        dram=dram,
-        scheduler=ramulator.scheduler.FRFCFS(),
-        refresh_manager=ramulator.refresh_manager.NoRefresh(),
-        row_policy=ramulator.row_policy.Open(),
-        addr_mapper=ramulator.addr_mapper.PassThroughAddrMapper(),
-        controller_plugins=plugins,
-    )
-    return ramulator.memory_system.GenericDRAM(
-        clock_ratio=1,
-        controllers=[ctrl],
-        channel_mapper=ramulator.channel_mapper.PassThroughChannelMapper(),
-    )
 
 
 def run_single(
@@ -162,21 +145,31 @@ def run_single(
     read_ratio: int = 100,
     seed: int | None = None,
     observability_dir: Path | None = None,
+    observability: Literal["preview", "persistent", "disabled"] = "preview",
 ) -> dict:
-    """Run one host-traffic LPDDR5-PIM smoke point.
+    """Run one host-traffic LPDDR PIM smoke point.
 
     PIM command replay is handled by :mod:`ramulator.pimscope.backend`. This
-    helper intentionally uses Ramulator 2.1's generic latency-throughput
-    frontend and no longer passes parameters removed from that frontend.
+    helper uses Ramulator's generic latency-throughput frontend and selects the
+    controller from the resolved PIM DRAM class.
+    ``preview`` returns bounded in-memory observability without paths,
+    ``persistent`` writes plugin output below ``observability_dir``, and
+    ``disabled`` runs without observability plugins. This low-level diagnostic
+    helper is separate from the manifest-based one-workload command.
     """
     import ramulator
 
     cfg = _merge_cfg(DEFAULT_CFG, cfg_override)
-    resolved_seed = int(cfg["seed"] if seed is None else seed)
-    if resolved_seed < 0:
+    resolved_seed = cfg["seed"] if seed is None else seed
+    if isinstance(resolved_seed, bool) or not isinstance(resolved_seed, int) or resolved_seed < 0:
         raise ValueError("seed must be a non-negative integer")
-    dram = dram if dram is not None else _make_dram(ramulator, cfg)
-    layout = _extract_dram_layout(dram)
+    if observability not in {"preview", "persistent", "disabled"}:
+        raise ValueError("observability must be 'preview', 'persistent', or 'disabled'")
+    if observability == "persistent" and observability_dir is None:
+        raise ValueError("observability_dir is required for persistent observability")
+
+    dram = dram if dram is not None else create_dram(cfg)
+    layout = extract_dram_layout(dram)
     frontend = ramulator.frontend.LatencyThroughputTrace(
         clock_ratio=int(cfg["frontend_clock_ratio"]),
         nop_counter=int(nop),
@@ -186,17 +179,55 @@ def run_single(
         seed=resolved_seed,
         read_ratio=int(read_ratio),
         stream_cls=int(cfg.get("stream_cls", 8)),
-        **layout,
+        addr_vec_size=layout["addr_vec_size"],
+        total_bank_units=layout["total_bank_units"],
+        row_pos=layout["row_pos"],
+        col_pos=layout["col_pos"],
+        num_rows=layout["num_rows"],
+        num_cols=layout["num_cols"],
+        internal_prefetch_size=layout["internal_prefetch_size"],
+        num_cls=layout["num_cls"],
+        bank_positions=layout["bank_positions"],
+        bank_counts=layout["bank_counts"],
     )
-    with tempfile.TemporaryDirectory(dir=observability_dir) as tmp:
-        tmpdir = Path(tmp)
-        mem = _make_controller_and_mem(ramulator, dram, _attach_plugins(ramulator, tmpdir))
+
+    def run(output_dir: Path | None) -> dict:
+        plugins = _attach_plugins(ramulator, output_dir, dram) if output_dir else []
+        memory_cfg = {
+            **cfg,
+            "controller": {
+                "scheduler": "FRFCFS",
+                "refresh_manager": "NoRefresh",
+                "row_policy": "Open",
+                "addr_mapper": "PassThroughAddrMapper",
+            },
+            "memory_system": {
+                "clock_ratio": 1,
+                "channel_mapper": "PassThroughChannelMapper",
+            },
+        }
+        mem = create_memory_system(dram, memory_cfg, controller_plugins=plugins)
         sim = ramulator.Simulation(frontend, mem)
         sim.run()
         sim.finalize()
         stats = sim.stats
-        stats.setdefault("evidence", {})["pim_energy_observability"] = _collect_observability(
-            stats, tmpdir, cfg
-        )
-        stats["evidence"]["seed"] = resolved_seed
+        evidence = stats.setdefault("evidence", {})
+        evidence["seed"] = resolved_seed
+        if output_dir is not None:
+            observed = _collect_observability(stats, output_dir, cfg)
+            observed["mode"] = observability
+            if observability == "persistent":
+                observed["outputs"] = [
+                    str(path) for path in sorted(output_dir.glob("command_*")) if path.is_file()
+                ]
+            evidence["pim_energy_observability"] = observed
         return stats
+
+    if observability == "persistent":
+        output_dir = Path(observability_dir).resolve()
+        output_dir.mkdir(parents=True, exist_ok=True)
+        return run(output_dir)
+    if observability == "disabled":
+        return run(None)
+    with tempfile.TemporaryDirectory() as tmp:
+        return run(Path(tmp))

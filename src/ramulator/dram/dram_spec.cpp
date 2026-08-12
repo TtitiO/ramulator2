@@ -5,8 +5,7 @@ namespace Ramulator {
 void DRAMSpec::load_config(const ConfigNode& config) {
   const ConfigNode dram = config["dram"];
 
-  // PIM fields are serialized only by PIM-capable standards. Keep defensive
-  // validation here because native callers can bypass the Python DSL.
+  // Validate PIM fields for native callers that bypass the Python DSL.
   pim_blocks_per_bank = dram["pim_blocks_per_bank"].as<int>(1);
   pim_banks_per_block = dram["pim_banks_per_block"].as<int>(2);
   pim_mac_execution_model = dram["pim_mac_execution_model"].as<std::string>("shared_block_serial");
@@ -52,16 +51,7 @@ void DRAMSpec::load_config(const ConfigNode& config) {
   pim_movement_cycles = dram["pim_movement_cycles"].as<int>(1);
   pim_writeback_cycles = dram["pim_writeback_cycles"].as<int>(0);
   const ConfigNode slots_per_request_node = dram["pim_slots_per_request"];
-  const ConfigNode legacy_slot_cost_node = dram["pim_slot_cost"];
-  if (slots_per_request_node && legacy_slot_cost_node) {
-    const int slots_per_request = slots_per_request_node.as<int>();
-    const int legacy_slot_cost = legacy_slot_cost_node.as<int>();
-    if (slots_per_request != legacy_slot_cost) {
-      throw std::runtime_error("DRAMSpec: pim_slot_cost is a compatibility alias and must equal pim_slots_per_request");
-    }
-  }
-  pim_slots_per_request = slots_per_request_node ? slots_per_request_node.as<int>() : legacy_slot_cost_node.as<int>(1);
-  pim_slot_cost = pim_slots_per_request;
+  pim_slots_per_request = slots_per_request_node.as<int>(1);
   pim_compute_energy_pJ_per_mac = dram["pim_compute_energy_pJ_per_mac"].as<double>(0.0);
   pim_array_local_energy_pJ = dram["pim_array_local_energy_pJ"].as<double>(0.0);
   pim_cell_to_pim_energy_pJ_per_256b = dram["pim_cell_to_pim_energy_pJ_per_256b"].as<double>(0.0);

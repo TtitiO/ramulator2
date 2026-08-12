@@ -1,6 +1,4 @@
-"""Declared capabilities and adaptation boundaries of public PIMScope backends."""
-
-from __future__ import annotations
+"""Public PIM backend capabilities."""
 
 from typing import Any
 
@@ -12,24 +10,39 @@ PIM_BACKEND_CAPABILITIES: dict[str, dict[str, Any]] = {
         "frontend": "LPDDR5PIMConcreteTrace",
         "trace_schema": "lpddr5-pim-opcode-v0.2",
         "paper_artifact_backend": True,
-        "notes": [
-            "Validated for the public one-controller/channel topology.",
-            "Paper artifact reproduction remains pinned to this backend.",
-        ],
+        "validated_rank_counts": [1, 2],
+        "validated_topology": {"controllers": 1, "channels": 1},
+        "host_access_timing_vocabulary": "lpddr5",
+        "paper_artifact_backend_name": "LPDDR5PIM",
+        "standard_power_calibration": "paper_profile_not_device_calibrated",
+        "pim_energy_method": "paper_event_coefficients",
+        "metadata_documentation": "ramulator2/docs/PIMScope-metadata.md",
     },
     "LPDDR6PIM": {
-        "status": "planned",
+        "status": "experimental",
         "base_dram_class": "LPDDR6",
         "available_base_dram_model": True,
-        "controller": None,
-        "frontend": None,
-        "trace_schema": None,
+        "dram_class": "LPDDR6PIM",
+        "controller": "LPDDR6PIM",
+        "frontend": "LPDDR6PIMConcreteTrace",
+        "trace_schema": "lpddr6-pim-opcode-v0.1",
         "paper_artifact_backend": False,
-        "notes": [
-            "Generic LPDDR6 timing support is not LPDDR6-PIM support.",
-            "Requires standard-specific PIM commands, scheduling, trace, hierarchy, "
-            "refresh, and power semantics.",
-        ],
+        "validated_rank_counts": [1, 2],
+        "validated_topology": {"controllers": 1, "channels": 1},
+        "subchannel_model": {
+            "status": "single_subchannel_only",
+            "modeled_subchannels_per_channel": 1,
+            "refresh_density_reference_subchannels": 2,
+            "independent_subchannel_scheduling": False,
+        },
+        "host_access_timing_vocabulary": "lpddr6_short_long",
+        "rank_local_modes_validated": True,
+        "refresh_validated": True,
+        "all_bank_lowering_validated": True,
+        "paper_artifact_backend_name": "LPDDR5PIM",
+        "standard_power_calibration": "drampower_test_fixture_not_device_datasheet",
+        "pim_energy_method": "lpddr5pim_event_coefficients",
+        "metadata_documentation": "ramulator2/docs/PIMScope-metadata.md",
     },
 }
 
@@ -39,7 +52,9 @@ def pim_backend_capabilities() -> dict[str, dict[str, Any]]:
     return {
         name: {
             **capability,
-            "notes": list(capability.get("notes", [])),
+            "validated_rank_counts": list(capability.get("validated_rank_counts", [])),
+            "validated_topology": dict(capability.get("validated_topology", {})),
+            "subchannel_model": dict(capability.get("subchannel_model", {})),
         }
         for name, capability in PIM_BACKEND_CAPABILITIES.items()
     }
@@ -49,21 +64,19 @@ def require_supported_pim_backend(dram_class: str) -> dict[str, Any]:
     """Return the supported backend or fail with an explicit adaptation boundary."""
     if dram_class == "LPDDR6":
         raise ValueError(
-            "hardware.dram_class: generic LPDDR6 is available in Ramulator, but "
-            "LPDDR6-PIM is not implemented; use LPDDR5PIM or follow the P1-27 adaptation plan"
+            "hardware.dram_class: generic LPDDR6 is available in Ramulator; "
+            "select LPDDR6PIM explicitly for the experimental PIM backend"
         )
     capability = PIM_BACKEND_CAPABILITIES.get(dram_class)
     if capability is None:
         supported = [
-            name
-            for name, item in PIM_BACKEND_CAPABILITIES.items()
-            if item["status"] == "supported"
+            name for name, item in PIM_BACKEND_CAPABILITIES.items() if item["status"] == "supported"
         ]
         raise ValueError(
             f"hardware.dram_class: unknown PIM backend {dram_class!r}; "
             f"supported backends: {supported}"
         )
-    if capability["status"] != "supported":
+    if capability["status"] not in {"supported", "experimental"}:
         base = capability.get("base_dram_class")
         base_note = f"; base DRAM standard {base} is available" if base else ""
         raise ValueError(

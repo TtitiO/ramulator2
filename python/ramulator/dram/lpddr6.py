@@ -12,6 +12,60 @@ class LPDDR6(DRAMStandard):
     data_payload_bytes = 32
     read_latency = "nRL + nBL_min"
 
+    # DRAMPower v6.2-compatible core accounting. Current profiles are supplied
+    # by callers; the LPDDR6 base standard does not imply device calibration.
+    power_unit_suffix = ""
+    power_commands_counted = ["ACT", "PRE", "RD_S", "RD_L", "WR_S", "WR_L", "REF"]
+    power_command_hooks = [
+        ("Bank", "ACT2", "ACT"),
+        ("Bank", "PREpb", "PRE"),
+        ("Bank", "RD_S", "RD_S"),
+        ("Bank", "RDA_S", "RD_S"),
+        ("Bank", "RD_L", "RD_L"),
+        ("Bank", "RDA_L", "RD_L"),
+        ("Bank", "WR_S", "WR_S"),
+        ("Bank", "WRA_S", "WR_S"),
+        ("Bank", "WR_L", "WR_L"),
+        ("Bank", "WRA_L", "WR_L"),
+        ("Rank", "ACT2", "ACT"),
+        ("Rank", "PREpb", "PRE"),
+        ("Rank", "PREab", "PREA"),
+        ("Rank", "REFab", "REFab"),
+    ]
+    power_command_energy_timings = {
+        "ACT": "nRAS", "PRE": "nRP", "RD_S": "nBL_min", "RD_L": "nBL_min_L",
+        "WR_S": "nBL_min", "WR_L": "nBL_min_L", "REF": "nRFC",
+    }
+    power_parameter_fields = [
+        f"{prefix}{rail}"
+        for prefix in ("VDD", "IDD0", "IDD2N", "IDD3N", "IDD4R", "IDD4W", "IDD5")
+        for rail in ("1", "2C", "2D")
+    ]
+    power_background_energy_terms = {
+        "active": [(f"VDD{rail}", f"IDD3N{rail}") for rail in ("1", "2C", "2D")],
+        "idle": [(f"VDD{rail}", f"IDD2N{rail}") for rail in ("1", "2C", "2D")],
+    }
+    power_command_energy_terms = {
+        "ACT": [(f"VDD{rail}", f"IDD0{rail}", f"IDD3N{rail}") for rail in ("1", "2C", "2D")],
+        "PRE": [(f"VDD{rail}", f"IDD0{rail}", f"IDD2N{rail}") for rail in ("1", "2C", "2D")],
+        "RD_S": [(f"VDD{rail}", f"IDD4R{rail}", f"IDD3N{rail}") for rail in ("1", "2C", "2D")],
+        "RD_L": [(f"VDD{rail}", f"IDD4R{rail}", f"IDD3N{rail}") for rail in ("1", "2C", "2D")],
+        "WR_S": [(f"VDD{rail}", f"IDD4W{rail}", f"IDD3N{rail}") for rail in ("1", "2C", "2D")],
+        "WR_L": [(f"VDD{rail}", f"IDD4W{rail}", f"IDD3N{rail}") for rail in ("1", "2C", "2D")],
+        "REF": [(f"VDD{rail}", f"IDD5{rail}", None) for rail in ("1", "2C", "2D")],
+    }
+
+    # The current hierarchy instantiates one 12-bit LPDDR6 sub-channel as one
+    # Ramulator Channel. JESD209-6 refresh tables specify density per pair of
+    # sub-channels, but the paired sub-channel is not an independently modeled
+    # hierarchy/timing domain here.
+    subchannel_model = {
+        "status": "single_subchannel_only",
+        "modeled_subchannels_per_channel": 1,
+        "refresh_density_reference_subchannels": 2,
+        "independent_subchannel_scheduling": False,
+    }
+
     levels = {
         "Channel":      "N_A",
         "Rank":         "N_A",

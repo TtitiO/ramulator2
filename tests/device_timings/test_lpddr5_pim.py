@@ -15,6 +15,37 @@ def make_dut():
     return device_timings.DeviceUnderTest(dram)
 
 
+def make_lpddr6_pim_dut():
+    dram = ramulator.dram.LPDDR6PIM(
+        org_preset="LPDDR6_16Gb_x12",
+        timing_preset="LPDDR6_10667_BL24",
+        rank=1,
+    )
+    return device_timings.DeviceUnderTest(dram)
+
+
+def test_lpddr6_pim_uses_cas_and_short_long_access_commands():
+    dut = make_lpddr6_pim_dut()
+    address = dut.addr_vec(Rank=0, BankGroup=0, Bank=0, Row=12, Column=0)
+
+    assert "CAS" in dut.command_names
+    assert "RD_S" in dut.command_names
+    assert "WR_S" in dut.command_names
+    assert "RD_L" in dut.command_names
+    assert "WR_L" in dut.command_names
+    assert "CAS_RD" not in dut.command_names
+    assert "RD" not in dut.command_names
+
+    dut.issue("ACT1", address, clk=0)
+    act2_clk = dut.get_first_ready_clk("ACT2", address, start=1)
+    dut.issue("ACT2", address, clk=act2_clk)
+    first_cas = dut.get_first_ready_clk("CAS", address, start=act2_clk + 1)
+    dut.issue("CAS", address, clk=first_cas)
+    first_read = dut.get_first_ready_clk("RD_S", address, start=first_cas + 1)
+    dut.assert_earliest_ready_at("RD_S", address, first_read)
+    assert first_read >= first_cas + dut.timings["nCAS"]
+
+
 def test_pim_mac_requires_act1_then_act2_before_timing_gate():
     dut = make_dut()
     a = dut.addr_vec(Rank=0, BankGroup=0, Bank=0, Row=12, Column=0)

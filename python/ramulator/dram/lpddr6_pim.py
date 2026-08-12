@@ -1,4 +1,4 @@
-from ramulator.dram.lpddr5 import LPDDR5
+from ramulator.dram.lpddr6 import LPDDR6
 from ramulator.dram.pim_validation import optional_int, optional_number
 from ramulator.dram.spec import TimingConstraint
 
@@ -77,16 +77,16 @@ PIM_MAC_EXECUTION_MODELS = {
     "subbank_overlap_experimental",
 }
 # Literature-anchored energy defaults:
-#   compute:   int8=0.35 pJ/MAC (CD-PIM, LPDDR5-PIM-native)
+#   compute:   int8=0.35 pJ/MAC (CD-PIM, LPDDR6-PIM-native)
 #              fp16=0.69, int16/bf16=0.55 (P3-LLM/LP-Spec ratios)
-#   movement:  cell_to_pim=2.68 pJ/256b (O'Connor FGDRAM model)
-#   RF access: vrf=3.17 pJ/256b, srf=0.40 pJ/32b (Gudaparthi et al.)
+#   movement:  cell_to_pim=2.68 pJ/256b (paper Table III, O'Connor FGDRAM)
+#   RF access: vrf=3.17 pJ/256b, srf=0.40 pJ/32b (paper Table III)
 #   mode_switch_energy: 0.0 (no public number)
 #   array_local_energy: 0.0 (folded into movement; charged in layer-1)
 #
 # Per-bank PIM_MAC energy does NOT include rank-level bus energy (JEDEC
 # IDD0-IDD2N × nBL_min). Rank-level bus energy for PIM_BCAST is accounted
-# by the inherited LPDDR5 power model.
+# by the inherited LPDDR6 power model.
 _PIM_ENERGY_DEFAULTS_BY_DTYPE: dict[str, dict[str, float]] = {
     "int8": {"pim_compute_energy_pJ_per_mac": 0.35},
     "fp16": {"pim_compute_energy_pJ_per_mac": 0.69},
@@ -101,95 +101,35 @@ _PIM_ENERGY_SHARED_DEFAULTS: dict[str, float] = {
     "pim_mode_switch_energy_pJ": 0.0,
 }
 
-# The camera-ready paper's LPDDR5-6400 analysis profile. Currents are in mA,
-# voltages in V, and the generated DRAMPower equations report pJ. These are
-# analysis inputs, not a device-datasheet claim; callers may replace the
-# profile explicitly through the low-level DRAM API.
-PAPER_LPDDR5_POWER_PROFILE_NAME = "PAPER_LPDDR5_POWER"
-PAPER_LPDDR5_POWER_UNITS = {
-    "current": "mA",
-    "voltage": "V",
-    "time": "ns",
-    "energy": "pJ",
-}
-# Provenance for the values used by the camera-ready LPDDR5-6400 replay.  The
-# paper cites DRAMPower [30] for the IDD method but does not publish a
-# machine-readable profile or a device part number.  Keep that limitation
-# explicit instead of presenting these values as calibrated silicon data.
-PAPER_LPDDR5_POWER_PROVENANCE = {
-    "source": "PIMScope camera-ready paper, Table III and Section III-B",
-    "source_path": "paper/PIMScope_camera_ready.pdf",
-    "source_reference": "[30] DRAMPower",
-    "profile_scope": "camera_ready_lpddr5_6400_analysis",
-    "calibration": "not_device_calibrated",
-    "dimensional_equation": "V[V] * I[mA] * t[ns] = E[pJ]",
-    # The paper baseline historically applies this additional scale in the
-    # generated LPDDR5 equations. It is retained for numerical reproducibility
-    # and reported explicitly rather than presented as a dimensional identity.
-    "legacy_conversion": "multiply_by_1e-3_after_V_mA_ns_product",
-    "legacy_conversion_scale": 1e-3,
-    "implementation_note": (
-        "legacy paper conversion is retained; do not use this profile as a "
-        "datasheet or calibrated absolute-energy claim"
-    ),
-}
-
-PAPER_LPDDR5_POWER: dict[str, float | bool] = {
+# DRAMPower v6.2.0 tests/tests_drampower/resources/lpddr6.json, converted
+# from A to mA for PIMScope's V * mA * ns = pJ equations. The upstream file
+# is a validation fixture with synthetic/zero fields, not a device datasheet.
+# Keep the provenance explicit and do not describe this profile as calibrated
+# LPDDR6 silicon power.
+DRAMPOWER_V620_LPDDR6_TEST_PROFILE: dict[str, float | bool] = {
     "enabled": True,
-    "VDD1": 1.80,
-    "VDD2H": 1.05,
-    "VDD2L": 0.90,
-    "VDDQ": 0.50,
-    "IDD01": 2.80,
-    "IDD02H": 32.00,
-    "IDD02L": 0.25,
-    "IDD0Q": 0.75,
-    "IDD2N1": 1.20,
-    "IDD2N2H": 16.00,
-    "IDD2N2L": 0.25,
-    "IDD2NQ": 0.75,
-    "IDD3N1": 1.20,
-    "IDD3N2H": 16.00,
-    "IDD3N2L": 0.25,
-    "IDD3NQ": 0.75,
-    "IDD4R1": 2.00,
-    "IDD4R2H": 18.00,
-    "IDD4R2L": 0.30,
-    "IDD4RQ": 0.85,
-    "IDD4W1": 2.10,
-    "IDD4W2H": 19.00,
-    "IDD4W2L": 0.35,
-    "IDD4WQ": 0.90,
-    "IDD5AB1": 2.20,
-    "IDD5AB2H": 35.00,
-    "IDD5AB2L": 0.25,
-    "IDD5ABQ": 0.75,
+    "VDD1": 1.2,
+    "VDD2C": 1.2,
+    "VDD2D": 1.2,
+    "IDD01": 56.25,
+    "IDD02C": 0.0,
+    "IDD02D": 0.0,
+    "IDD2N1": 33.75,
+    "IDD2N2C": 0.0,
+    "IDD2N2D": 0.0,
+    "IDD3N1": 35.0,
+    "IDD3N2C": 0.0,
+    "IDD3N2D": 0.0,
+    "IDD4R1": 157.5,
+    "IDD4R2C": 0.0,
+    "IDD4R2D": 0.0,
+    "IDD4W1": 135.0,
+    "IDD4W2C": 0.0,
+    "IDD4W2D": 0.0,
+    "IDD51": 118.0,
+    "IDD52C": 0.0,
+    "IDD52D": 0.0,
 }
-
-
-def validate_lpddr5_power_profile(power: dict[str, float | bool]) -> None:
-    """Fail early if the built-in LPDDR5 analysis profile is malformed.
-
-    Custom profiles are accepted by the low-level API, but must use the same
-    fields and non-negative physical units as the built-in profile.
-    """
-    if "enabled" not in power:
-        raise ValueError("LPDDR5PIM power profile is missing field: enabled")
-    if power["enabled"] is False:
-        return
-    if power["enabled"] is not True:
-        raise ValueError("LPDDR5PIM power profile enabled must be a boolean")
-    required = set(LPDDR5.power_parameter_fields)
-    missing = sorted(field for field in required if field not in power)
-    if missing:
-        raise ValueError(f"LPDDR5PIM power profile is missing fields: {', '.join(missing)}")
-    for field in LPDDR5.power_parameter_fields:
-        value = power[field]
-        if isinstance(value, bool) or not isinstance(value, (int, float)) or value < 0:
-            raise ValueError(
-                f"LPDDR5PIM power field {field} must be a non-negative number in mA or V"
-            )
-
 
 for _dtype, _resource in PIM_DATATYPE_METADATA.items():
     for _field in PIM_EVENT_ENERGY_FIELDS:
@@ -199,18 +139,19 @@ for _dtype, _resource in PIM_DATATYPE_METADATA.items():
         )
 
 
-class LPDDR5PIM(LPDDR5):
-    """LPDDR5 plus the PIMScope execution-resource and mode abstractions.
+class LPDDR6PIM(LPDDR6):
+    """LPDDR6 plus the PIMScope execution-resource and mode abstractions.
 
     ``nPIM_MAC_II`` constrains command launch spacing. Request completion is
     modeled separately by the controller as pipeline + movement + writeback
     residency, subject to bank slots and optional shared-block serialization.
     """
 
-    name = "LPDDR5PIM"
+    name = "LPDDR6PIM"
 
-    # Keep inherited LPDDR5 power terms as-is for standard memory energy,
-    # and add PIM-only incremental command energy as a separate category.
+    # Keep inherited LPDDR6 standard terms separate from PIM-only event energy.
+    # The default standard profile is the DRAMPower v6.2 test fixture above and
+    # is intentionally reported as experimental rather than silicon-calibrated.
     power_incremental_commands_counted = [
         "PIM_MAC",
         "PIM_MAC_AB",
@@ -220,12 +161,8 @@ class LPDDR5PIM(LPDDR5):
         "SB",
     ]
     power_incremental_command_hooks = [
-        ("Rank", "PIM_MAC", "COUNT_PIM_INCREMENTAL_ENERGY"),
-        ("Rank", "PIM_MAC_AB", "COUNT_PIM_INCREMENTAL_ENERGY"),
-        ("Rank", "PIM_BCAST", "COUNT_PIM_INCREMENTAL_ENERGY"),
-        ("Rank", "HAB", "COUNT_PIM_INCREMENTAL_ENERGY"),
-        ("Rank", "HAB_PIM", "COUNT_PIM_INCREMENTAL_ENERGY"),
-        ("Rank", "SB", "COUNT_PIM_INCREMENTAL_ENERGY"),
+        ("Rank", command, "COUNT_PIM_INCREMENTAL_ENERGY")
+        for command in power_incremental_commands_counted
     ]
     power_incremental_command_energy_timings = {
         "PIM_MAC": "nPIM_MAC_LAT",
@@ -235,8 +172,6 @@ class LPDDR5PIM(LPDDR5):
         "HAB_PIM": "nBL_min",
         "SB": "nBL_min",
     }
-    # PIM_MAC/PIM_MAC_AB energy uses explicit event coefficients; inherited
-    # LPDDR5 IDD3N background covers active-bank current.
     _pim_mac_event_energy_expr = (
         "pim_array_local_energy_pJ + "
         "pim_lanes * pim_compute_energy_pJ_per_mac + "
@@ -244,8 +179,6 @@ class LPDDR5PIM(LPDDR5):
         "pim_vrf_access_energy_pJ + "
         "pim_srf_access_energy_pJ"
     )
-    # PIM_BCAST adds bank-local cell-to-PIM movement; rank-level bus energy
-    # is accounted by the inherited LPDDR5 (IDD0-IDD2N) × nBL_min model.
     power_incremental_command_event_energy_exprs = {
         "PIM_MAC": _pim_mac_event_energy_expr,
         "PIM_MAC_AB": _pim_mac_event_energy_expr,
@@ -254,45 +187,26 @@ class LPDDR5PIM(LPDDR5):
         "HAB_PIM": "pim_mode_switch_energy_pJ",
         "SB": "pim_mode_switch_energy_pJ",
     }
+    _rank_transfer_terms = [
+        (f"VDD{rail}", f"IDD0{rail}", f"IDD2N{rail}") for rail in ("1", "2C", "2D")
+    ]
     power_incremental_command_energy_terms = {
-        # PIM_MAC banks remain active, so inherited LPDDR5 background accounts
-        # for IDD3N. The incremental PIM_MAC layer is event-coefficient only.
         "PIM_MAC": [],
         "PIM_MAC_AB": [],
-        "PIM_BCAST": [
-            ("VDD1", "IDD01", "IDD2N1"),
-            ("VDD2H", "IDD02H", "IDD2N2H"),
-            ("VDD2L", "IDD02L", "IDD2N2L"),
-            ("VDDQ", "IDD0Q", "IDD2NQ"),
-        ],
-        "HAB": [
-            ("VDD1", "IDD01", "IDD2N1"),
-            ("VDD2H", "IDD02H", "IDD2N2H"),
-            ("VDD2L", "IDD02L", "IDD2N2L"),
-            ("VDDQ", "IDD0Q", "IDD2NQ"),
-        ],
-        "HAB_PIM": [
-            ("VDD1", "IDD01", "IDD2N1"),
-            ("VDD2H", "IDD02H", "IDD2N2H"),
-            ("VDD2L", "IDD02L", "IDD2N2L"),
-            ("VDDQ", "IDD0Q", "IDD2NQ"),
-        ],
-        "SB": [
-            ("VDD1", "IDD01", "IDD2N1"),
-            ("VDD2H", "IDD02H", "IDD2N2H"),
-            ("VDD2L", "IDD02L", "IDD2N2L"),
-            ("VDDQ", "IDD0Q", "IDD2NQ"),
-        ],
+        "PIM_BCAST": _rank_transfer_terms,
+        "HAB": _rank_transfer_terms,
+        "HAB_PIM": _rank_transfer_terms,
+        "SB": _rank_transfer_terms,
     }
 
     levels = {
-        **LPDDR5.levels,
+        **LPDDR6.levels,
         "Rank": "PIM_SB",
     }
 
-    states = LPDDR5.states + ["PIM_SB", "PIM_HAB", "PIM_HAB_PIM"]
+    states = LPDDR6.states + ["PIM_SB", "PIM_HAB", "PIM_HAB_PIM"]
 
-    commands = LPDDR5.commands + [
+    commands = LPDDR6.commands + [
         "SB",
         "HAB",
         "HAB_PIM",
@@ -301,17 +215,17 @@ class LPDDR5PIM(LPDDR5):
         "PIM_MAC_AB",
     ]
 
-    timing_params = LPDDR5.timing_params + ["nPIM_MAC_LAT", "nPIM_MAC_II"]
+    timing_params = LPDDR6.timing_params + ["nPIM_MAC_LAT", "nPIM_MAC_II"]
 
     supported_requests = {
-        **LPDDR5.supported_requests,
+        **LPDDR6.supported_requests,
         "PIMCompute": "PIM_MAC",
         "PIMLoadAll": "PIM_BCAST",
         "PIMComputeAll": "PIM_MAC_AB",
     }
 
-    timing_constraints = LPDDR5.timing_constraints + [
-        TimingConstraint(level="Bank", preceding=["ACT1"], following=["PIM_MAC"], latency="nRCD"),
+    timing_constraints = LPDDR6.timing_constraints + [
+        TimingConstraint(level="Bank", preceding=["ACT1"], following=["PIM_MAC"], latency="nRCDr"),
         TimingConstraint(
             level="Bank",
             preceding=["PIM_MAC"],
@@ -325,7 +239,7 @@ class LPDDR5PIM(LPDDR5):
             latency="nPIM_MAC_II",
         ),
         # Bounded spacing abstraction for the synthetic PIM_BCAST opcode; exact
-        # LPDDR5-PIM broadcast/source timing is not public silicon ground truth.
+        # LPDDR6-PIM broadcast/source timing is not public silicon ground truth.
         TimingConstraint(
             level="Rank",
             preceding=["PIM_BCAST"],
@@ -334,7 +248,7 @@ class LPDDR5PIM(LPDDR5):
         ),
     ]
 
-    org_presets = LPDDR5.org_presets
+    org_presets = LPDDR6.org_presets
 
     timing_presets = {
         preset_name: {
@@ -342,7 +256,7 @@ class LPDDR5PIM(LPDDR5):
             "nPIM_MAC_LAT": 8,
             "nPIM_MAC_II": 8,
         }
-        for preset_name, preset in LPDDR5.timing_presets.items()
+        for preset_name, preset in LPDDR6.timing_presets.items()
     }
 
     def __init__(
@@ -375,15 +289,13 @@ class LPDDR5PIM(LPDDR5):
         pim_vrf_access_energy_pJ=None,
         pim_srf_access_energy_pJ=None,
         pim_mode_switch_energy_pJ=None,
-        pim_mac_latency_scale=None,
-        pim_incremental_energy_scale=None,
         **overrides,
     ):
         pim_datatype = str(pim_datatype).lower()
         if pim_datatype not in PIM_DATATYPE_METADATA:
             supported = ", ".join(sorted(PIM_DATATYPE_METADATA))
             raise ValueError(
-                f"LPDDR5PIM unknown pim_datatype '{pim_datatype}'; supported datatypes: {supported}"
+                f"LPDDR6PIM unknown pim_datatype '{pim_datatype}'; supported datatypes: {supported}"
             )
         if not pim_datatype_class:
             pim_datatype_class = pim_datatype
@@ -391,28 +303,19 @@ class LPDDR5PIM(LPDDR5):
         if pim_datatype_class not in PIM_DATATYPE_METADATA:
             supported = ", ".join(sorted(PIM_DATATYPE_METADATA))
             raise ValueError(
-                f"LPDDR5PIM unknown pim_datatype_class '{pim_datatype_class}'; "
+                f"LPDDR6PIM unknown pim_datatype_class '{pim_datatype_class}'; "
                 f"supported datatype classes: {supported}"
             )
         if pim_datatype_class != pim_datatype:
             raise ValueError(
-                "LPDDR5PIM pim_datatype_class must match pim_datatype; "
+                "LPDDR6PIM pim_datatype_class must match pim_datatype; "
                 "cross-datatype resource substitution is not a defined hardware model"
             )
-        if pim_mac_latency_scale is not None:
-            raise ValueError(
-                "LPDDR5PIM pim_mac_latency_scale is deprecated; use explicit pipeline/II cycles"
-            )
-        if pim_incremental_energy_scale is not None:
-            raise ValueError(
-                "LPDDR5PIM pim_incremental_energy_scale is deprecated; use explicit event-energy terms"
-            )
-
         pim_mac_execution_model = str(pim_mac_execution_model)
         if pim_mac_execution_model not in PIM_MAC_EXECUTION_MODELS:
             supported = ", ".join(sorted(PIM_MAC_EXECUTION_MODELS))
             raise ValueError(
-                f"LPDDR5PIM unknown pim_mac_execution_model '{pim_mac_execution_model}'; "
+                f"LPDDR6PIM unknown pim_mac_execution_model '{pim_mac_execution_model}'; "
                 f"supported values: {supported}"
             )
 
@@ -431,9 +334,9 @@ class LPDDR5PIM(LPDDR5):
             "pim_ops_per_request": (pim_ops_per_request, 1),
         }
         for field, (value, minimum) in integer_overrides.items():
-            optional_int(value, f"LPDDR5PIM {field}", minimum=minimum)
+            optional_int(value, f"LPDDR6PIM {field}", minimum=minimum)
         if not isinstance(pim_datatype_behavior_enabled, bool):
-            raise ValueError("LPDDR5PIM pim_datatype_behavior_enabled must be a boolean")
+            raise ValueError("LPDDR6PIM pim_datatype_behavior_enabled must be a boolean")
         for field, value in {
             "pim_compute_energy_pJ_per_mac": pim_compute_energy_pJ_per_mac,
             "pim_array_local_energy_pJ": pim_array_local_energy_pJ,
@@ -442,13 +345,13 @@ class LPDDR5PIM(LPDDR5):
             "pim_srf_access_energy_pJ": pim_srf_access_energy_pJ,
             "pim_mode_switch_energy_pJ": pim_mode_switch_energy_pJ,
         }.items():
-            optional_number(value, f"LPDDR5PIM {field}", positive=False)
+            optional_number(value, f"LPDDR6PIM {field}", positive=False)
 
         resource = dict(PIM_DATATYPE_METADATA[pim_datatype_class])
         if pim_datatype_behavior_enabled and pim_datatype_class not in PIM_DATATYPE_RESOURCES:
             supported = ", ".join(sorted(PIM_DATATYPE_RESOURCES))
             raise ValueError(
-                f"LPDDR5PIM source-backed datatype resources for '{pim_datatype_class}' are unsupported; "
+                f"LPDDR6PIM source-backed datatype resources for '{pim_datatype_class}' are unsupported; "
                 f"supported datatype classes: {supported}"
             )
         if pim_datatype_bits is not None:
@@ -499,46 +402,46 @@ class LPDDR5PIM(LPDDR5):
         resource["pim_ops_per_request"] = float(resource["pim_ops_per_block_issue"])
 
         if not isinstance(pim_blocks_per_bank, int) or isinstance(pim_blocks_per_bank, bool):
-            raise ValueError("LPDDR5PIM pim_blocks_per_bank must be an integer")
+            raise ValueError("LPDDR6PIM pim_blocks_per_bank must be an integer")
         if not isinstance(pim_banks_per_block, int) or isinstance(pim_banks_per_block, bool):
-            raise ValueError("LPDDR5PIM pim_banks_per_block must be an integer")
+            raise ValueError("LPDDR6PIM pim_banks_per_block must be an integer")
         if pim_blocks_per_bank <= 0:
-            raise ValueError("LPDDR5PIM pim_blocks_per_bank must be positive")
+            raise ValueError("LPDDR6PIM pim_blocks_per_bank must be positive")
         if resource["pim_datatype_bits"] <= 0:
-            raise ValueError("LPDDR5PIM pim_datatype_bits must be positive")
+            raise ValueError("LPDDR6PIM pim_datatype_bits must be positive")
         if resource["pim_simd_width_bits"] <= 0:
-            raise ValueError("LPDDR5PIM pim_simd_width_bits must be positive")
+            raise ValueError("LPDDR6PIM pim_simd_width_bits must be positive")
         if resource["pim_simd_width_bits"] % resource["pim_datatype_bits"] != 0:
-            raise ValueError("LPDDR5PIM pim_simd_width_bits must be divisible by pim_datatype_bits")
+            raise ValueError("LPDDR6PIM pim_simd_width_bits must be divisible by pim_datatype_bits")
         expected_lanes = resource["pim_simd_width_bits"] // resource["pim_datatype_bits"]
         if resource["pim_lanes"] <= 0:
-            raise ValueError("LPDDR5PIM pim_lanes must be positive")
+            raise ValueError("LPDDR6PIM pim_lanes must be positive")
         if resource["pim_lanes"] != expected_lanes:
             raise ValueError(
-                f"LPDDR5PIM pim_lanes must equal pim_simd_width_bits / "
+                f"LPDDR6PIM pim_lanes must equal pim_simd_width_bits / "
                 f"pim_datatype_bits ({expected_lanes}), got {resource['pim_lanes']}"
             )
         if resource["pim_ops_per_mac"] <= 0:
-            raise ValueError("LPDDR5PIM pim_ops_per_mac must be positive")
+            raise ValueError("LPDDR6PIM pim_ops_per_mac must be positive")
         if resource["pim_ops_per_block_issue"] <= 0:
-            raise ValueError("LPDDR5PIM pim_ops_per_block_issue must be positive")
+            raise ValueError("LPDDR6PIM pim_ops_per_block_issue must be positive")
         if resource["pim_ops_per_request"] <= 0:
-            raise ValueError("LPDDR5PIM pim_ops_per_request must be positive")
+            raise ValueError("LPDDR6PIM pim_ops_per_request must be positive")
         if resource["pim_mac_issue_interval_cycles"] <= 0:
-            raise ValueError("LPDDR5PIM pim_mac_issue_interval_cycles must be positive")
+            raise ValueError("LPDDR6PIM pim_mac_issue_interval_cycles must be positive")
         if resource["pim_mac_pipeline_latency_cycles"] <= 0:
-            raise ValueError("LPDDR5PIM pim_mac_pipeline_latency_cycles must be positive")
+            raise ValueError("LPDDR6PIM pim_mac_pipeline_latency_cycles must be positive")
         if resource["pim_movement_cycles"] < 0:
-            raise ValueError("LPDDR5PIM pim_movement_cycles must be non-negative")
+            raise ValueError("LPDDR6PIM pim_movement_cycles must be non-negative")
         if resource["pim_writeback_cycles"] < 0:
-            raise ValueError("LPDDR5PIM pim_writeback_cycles must be non-negative")
+            raise ValueError("LPDDR6PIM pim_writeback_cycles must be non-negative")
         if resource["pim_slots_per_request"] <= 0:
-            raise ValueError("LPDDR5PIM pim_slots_per_request must be positive")
+            raise ValueError("LPDDR6PIM pim_slots_per_request must be positive")
         if pim_banks_per_block <= 0:
-            raise ValueError("LPDDR5PIM pim_banks_per_block must be positive")
+            raise ValueError("LPDDR6PIM pim_banks_per_block must be positive")
         for energy_field in PIM_EVENT_ENERGY_FIELDS:
             if resource[energy_field] < 0:
-                raise ValueError(f"LPDDR5PIM {energy_field} must be non-negative")
+                raise ValueError(f"LPDDR6PIM {energy_field} must be non-negative")
 
         self.pim_blocks_per_bank = pim_blocks_per_bank
         self.pim_banks_per_block = pim_banks_per_block
@@ -548,8 +451,7 @@ class LPDDR5PIM(LPDDR5):
         self.pim_datatype_behavior_enabled = pim_datatype_behavior_enabled
         self.pim_datatype_resource = resource
         if power is None:
-            power = dict(PAPER_LPDDR5_POWER)
-        validate_lpddr5_power_profile(power)
+            power = dict(DRAMPOWER_V620_LPDDR6_TEST_PROFILE)
         super().__init__(
             org_preset=org_preset, timing_preset=timing_preset, power=power, **overrides
         )
@@ -571,19 +473,19 @@ class LPDDR5PIM(LPDDR5):
             banks_per_rank *= int(org_dict[level_name.lower()])
         if self.pim_banks_per_block > banks_per_rank:
             raise ValueError(
-                f"LPDDR5PIM pim_banks_per_block ({self.pim_banks_per_block}) exceeds "
+                f"LPDDR6PIM pim_banks_per_block ({self.pim_banks_per_block}) exceeds "
                 f"banks per rank ({banks_per_rank})"
             )
         if banks_per_rank % self.pim_banks_per_block != 0:
             raise ValueError(
-                f"LPDDR5PIM banks per rank ({banks_per_rank}) must be divisible by "
+                f"LPDDR6PIM banks per rank ({banks_per_rank}) must be divisible by "
                 f"pim_banks_per_block ({self.pim_banks_per_block})"
             )
         if self.pim_datatype_behavior_enabled and self.pim_blocks_per_bank < int(
             self.pim_datatype_resource["pim_slots_per_request"]
         ):
             raise ValueError(
-                "LPDDR5PIM pim_blocks_per_bank must be at least pim_slots_per_request "
+                "LPDDR6PIM pim_blocks_per_bank must be at least pim_slots_per_request "
                 "when datatype behavior is enabled"
             )
 

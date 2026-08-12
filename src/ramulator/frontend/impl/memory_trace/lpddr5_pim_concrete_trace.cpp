@@ -17,8 +17,10 @@ namespace Ramulator {
 
 namespace fs = std::filesystem;
 
-class LPDDR5PIMConcreteTrace : public IFrontEnd, public Implementation {
-  RAMULATOR_REGISTER_IMPLEMENTATION(IFrontEnd, LPDDR5PIMConcreteTrace, "LPDDR5PIMConcreteTrace")
+class LPDDRPIMConcreteTrace : public IFrontEnd, public Implementation {
+ public:
+  LPDDRPIMConcreteTrace(const ConfigNode& config, Implementation* parent)
+      : Implementation(config, "frontend", "LPDDRPIMConcreteTrace", parent) {}
 
  private:
   struct OpcodeRecord {
@@ -65,6 +67,7 @@ class LPDDR5PIMConcreteTrace : public IFrontEnd, public Implementation {
   std::vector<int> m_address_level_sizes;
   int m_internal_prefetch_size = 0;
   int m_tx_bytes = 0;
+  int m_rank_level = -1;
   int m_bank_level = -1;
   int m_row_level = -1;
   int m_col_level = -1;
@@ -75,6 +78,8 @@ class LPDDR5PIMConcreteTrace : public IFrontEnd, public Implementation {
   int m_max_repeat = 1000000;
   int64_t m_max_expanded_records = 1000000000;
   int m_max_inflight_requests = 1;
+  std::string m_expected_schema_version = "lpddr5-pim-opcode-v0.2";
+  std::string m_expected_dram_class = "LPDDR5PIM";
 
   size_t m_curr_record_idx = 0;
   int m_curr_repeat_idx = 0;
@@ -115,13 +120,15 @@ class LPDDR5PIMConcreteTrace : public IFrontEnd, public Implementation {
     RAMULATOR_PARSE_PARAM(m_max_repeat, int, "max_repeat").default_val(1000000);
     RAMULATOR_PARSE_PARAM(m_max_expanded_records, int64_t, "max_expanded_records").default_val(1000000000);
     RAMULATOR_PARSE_PARAM(m_max_inflight_requests, int, "max_inflight_requests").default_val(1);
+    RAMULATOR_PARSE_PARAM(m_expected_schema_version, std::string, "expected_schema_version").default_val("lpddr5-pim-opcode-v0.2");
+    RAMULATOR_PARSE_PARAM(m_expected_dram_class, std::string, "expected_dram_class").default_val("LPDDR5PIM");
 
     validate_address_layout();
     if (m_max_trace_bytes <= 0 || m_max_records <= 0 || m_max_repeat <= 0 || m_max_expanded_records <= 0) {
-      throw std::runtime_error("LPDDR5PIMConcreteTrace: max trace limits must be positive");
+      throw std::runtime_error("LPDDRPIMConcreteTrace: max trace limits must be positive");
     }
     if (m_max_inflight_requests <= 0) {
-      throw std::runtime_error("LPDDR5PIMConcreteTrace: max_inflight_requests must be positive");
+      throw std::runtime_error("LPDDRPIMConcreteTrace: max_inflight_requests must be positive");
     }
     load_trace(m_trace_path);
     validate_sequence();
@@ -193,32 +200,35 @@ class LPDDR5PIMConcreteTrace : public IFrontEnd, public Implementation {
   void validate_address_layout() {
     if (m_address_mapping_version != 1) {
       throw std::runtime_error(fmt::format(
-          "LPDDR5PIMConcreteTrace: unsupported address_mapping_version {}; expected 1",
+          "LPDDRPIMConcreteTrace: unsupported address_mapping_version {}; expected 1",
           m_address_mapping_version));
     }
     if (m_addr_vec_size <= 0) {
-      throw std::runtime_error("LPDDR5PIMConcreteTrace: addr_vec_size must be positive");
+      throw std::runtime_error("LPDDRPIMConcreteTrace: addr_vec_size must be positive");
     }
     if (static_cast<int>(m_level_names.size()) != m_addr_vec_size ||
         static_cast<int>(m_level_sizes.size()) != m_addr_vec_size ||
         static_cast<int>(m_address_level_sizes.size()) != m_addr_vec_size) {
       throw std::runtime_error(
-          "LPDDR5PIMConcreteTrace: level_names, level_sizes, and address_level_sizes must match addr_vec_size");
+          "LPDDRPIMConcreteTrace: level_names, level_sizes, and address_level_sizes must match addr_vec_size");
     }
     if (m_level_names.empty() || m_level_names.front() != "Channel") {
       throw std::runtime_error(
-          "LPDDR5PIMConcreteTrace: address layout must begin with Channel");
+          "LPDDRPIMConcreteTrace: address layout must begin with Channel");
     }
     if (m_level_names.back() != "Column") {
       throw std::runtime_error(
-          "LPDDR5PIMConcreteTrace: address layout must end with Column");
+          "LPDDRPIMConcreteTrace: address layout must end with Column");
     }
     for (size_t index = 0; index < m_level_sizes.size(); index++) {
       if (m_level_sizes[index] <= 0 || m_address_level_sizes[index] <= 0 ||
           m_address_level_sizes[index] > m_level_sizes[index]) {
         throw std::runtime_error(fmt::format(
-            "LPDDR5PIMConcreteTrace: level '{}' sizes must satisfy 0 < address size <= physical size",
+            "LPDDRPIMConcreteTrace: level '{}' sizes must satisfy 0 < address size <= physical size",
             m_level_names[index]));
+      }
+      if (m_level_names[index] == "Rank") {
+        m_rank_level = static_cast<int>(index);
       }
       if (m_level_names[index] == "Bank") {
         m_bank_level = static_cast<int>(index);
@@ -230,26 +240,28 @@ class LPDDR5PIMConcreteTrace : public IFrontEnd, public Implementation {
         m_col_level = static_cast<int>(index);
       }
     }
-    if (m_bank_level < 0 || m_row_level < 0 || m_col_level != m_addr_vec_size - 1) {
+    if (m_rank_level < 0 || m_bank_level < 0 || m_row_level < 0 ||
+        m_col_level != m_addr_vec_size - 1 || m_rank_level >= m_bank_level) {
       throw std::runtime_error(
-          "LPDDR5PIMConcreteTrace: address layout must contain Bank and Row, with Column final");
+          "LPDDRPIMConcreteTrace: address layout must contain ordered Rank/Bank/Row levels, "
+          "with Column final");
     }
     if (m_internal_prefetch_size <= 0 ||
         m_level_sizes[m_col_level] % m_internal_prefetch_size != 0 ||
         m_address_level_sizes[m_col_level] !=
             m_level_sizes[m_col_level] / m_internal_prefetch_size) {
       throw std::runtime_error(
-          "LPDDR5PIMConcreteTrace: address-level Column size must equal physical Column size / internal_prefetch_size");
+          "LPDDRPIMConcreteTrace: address-level Column size must equal physical Column size / internal_prefetch_size");
     }
     for (int index = 0; index < m_addr_vec_size - 1; index++) {
       if (m_address_level_sizes[index] != m_level_sizes[index]) {
         throw std::runtime_error(fmt::format(
-            "LPDDR5PIMConcreteTrace: address-level size for '{}' must equal its physical size",
+            "LPDDRPIMConcreteTrace: address-level size for '{}' must equal its physical size",
             m_level_names[index]));
       }
     }
     if (m_tx_bytes <= 0) {
-      throw std::runtime_error("LPDDR5PIMConcreteTrace: tx_bytes must be positive");
+      throw std::runtime_error("LPDDRPIMConcreteTrace: tx_bytes must be positive");
     }
 
     uint64_t transactions = 1;
@@ -257,13 +269,13 @@ class LPDDR5PIMConcreteTrace : public IFrontEnd, public Implementation {
       uint64_t radix = static_cast<uint64_t>(m_address_level_sizes[index]);
       if (radix == 0 || transactions > std::numeric_limits<uint64_t>::max() / radix) {
         throw std::runtime_error(
-            "LPDDR5PIMConcreteTrace: address layout transaction capacity overflows uint64_t");
+            "LPDDRPIMConcreteTrace: address layout transaction capacity overflows uint64_t");
       }
       transactions *= radix;
     }
     if (transactions > std::numeric_limits<uint64_t>::max() / static_cast<uint64_t>(m_tx_bytes)) {
       throw std::runtime_error(
-          "LPDDR5PIMConcreteTrace: address layout byte capacity overflows uint64_t");
+          "LPDDRPIMConcreteTrace: address layout byte capacity overflows uint64_t");
     }
     m_addressable_transactions = transactions;
     m_addressable_capacity_bytes = transactions * static_cast<uint64_t>(m_tx_bytes);
@@ -272,14 +284,14 @@ class LPDDR5PIMConcreteTrace : public IFrontEnd, public Implementation {
   void validate_addr_vec(const AddrVec_t& addr_vec, const std::string& path, int line_num) const {
     if (static_cast<int>(addr_vec.size()) != m_addr_vec_size) {
       throw std::runtime_error(fmt::format(
-          "LPDDR5PIMConcreteTrace: {} line {} addr_vec size {} must equal addr_vec_size {}",
+          "LPDDRPIMConcreteTrace: {} line {} addr_vec size {} must equal addr_vec_size {}",
           path, line_num, addr_vec.size(), m_addr_vec_size));
     }
     for (int index = 0; index < m_addr_vec_size; index++) {
       int value = addr_vec[index];
       if (value < 0 || value >= m_level_sizes[index]) {
         throw std::runtime_error(fmt::format(
-            "LPDDR5PIMConcreteTrace: {} line {} addr_vec[{}] ({})={} must be in [0, {})",
+            "LPDDRPIMConcreteTrace: {} line {} addr_vec[{}] ({})={} must be in [0, {})",
             path, line_num, index, m_level_names[index], value, m_level_sizes[index]));
       }
     }
@@ -288,14 +300,14 @@ class LPDDR5PIMConcreteTrace : public IFrontEnd, public Implementation {
   void load_trace(const std::string& file_path_str) {
     fs::path trace_path(file_path_str);
     if (!fs::exists(trace_path)) {
-      throw std::runtime_error(fmt::format("LPDDR5PIMConcreteTrace: trace {} does not exist", file_path_str));
+      throw std::runtime_error(fmt::format("LPDDRPIMConcreteTrace: trace {} does not exist", file_path_str));
     }
     if (fs::file_size(trace_path) > static_cast<uint64_t>(m_max_trace_bytes)) {
-      throw std::runtime_error(fmt::format("LPDDR5PIMConcreteTrace: trace {} exceeds max_trace_bytes {}", file_path_str, m_max_trace_bytes));
+      throw std::runtime_error(fmt::format("LPDDRPIMConcreteTrace: trace {} exceeds max_trace_bytes {}", file_path_str, m_max_trace_bytes));
     }
     std::ifstream trace_file(trace_path);
     if (!trace_file.is_open()) {
-      throw std::runtime_error(fmt::format("LPDDR5PIMConcreteTrace: trace {} cannot be opened", file_path_str));
+      throw std::runtime_error(fmt::format("LPDDRPIMConcreteTrace: trace {} cannot be opened", file_path_str));
     }
 
     std::string line;
@@ -310,7 +322,7 @@ class LPDDR5PIMConcreteTrace : public IFrontEnd, public Implementation {
       try {
         node = YAML::Load(line);
       } catch (const YAML::Exception& exc) {
-        throw std::runtime_error(fmt::format("LPDDR5PIMConcreteTrace: {} line {} parse error: {}", file_path_str, line_num, exc.what()));
+        throw std::runtime_error(fmt::format("LPDDRPIMConcreteTrace: {} line {} parse error: {}", file_path_str, line_num, exc.what()));
       }
       // The first non-empty line is the v0.2 header envelope: it carries the
       // file-level constants (schema_version + provenance) asserted once here
@@ -321,40 +333,42 @@ class LPDDR5PIMConcreteTrace : public IFrontEnd, public Implementation {
         continue;
       }
       if (static_cast<int>(m_records.size()) >= m_max_records) {
-        throw std::runtime_error(fmt::format("LPDDR5PIMConcreteTrace: {} exceeds max_records {}", file_path_str, m_max_records));
+        throw std::runtime_error(fmt::format("LPDDRPIMConcreteTrace: {} exceeds max_records {}", file_path_str, m_max_records));
       }
       m_records.push_back(parse_record(node, file_path_str, line_num));
       s_records_loaded++;
       s_records_expanded += m_records.back().repeat;
       if (static_cast<int64_t>(s_records_expanded) > m_max_expanded_records) {
-        throw std::runtime_error(fmt::format("LPDDR5PIMConcreteTrace: {} exceeds max_expanded_records {}", file_path_str, m_max_expanded_records));
+        throw std::runtime_error(fmt::format("LPDDRPIMConcreteTrace: {} exceeds max_expanded_records {}", file_path_str, m_max_expanded_records));
       }
     }
     if (!header_parsed) {
-      throw std::runtime_error(fmt::format("LPDDR5PIMConcreteTrace: {} is missing the v0.2 header line", file_path_str));
+      throw std::runtime_error(fmt::format("LPDDRPIMConcreteTrace: {} is missing the trace header line", file_path_str));
     }
   }
 
   void parse_header(const YAML::Node& node, const std::string& path, int line_num) {
     if (node["opcode"]) {
-      throw std::runtime_error(fmt::format("LPDDR5PIMConcreteTrace: {} line {} expected a v0.2 header (schema_version) but found a record; regenerate the trace as lpddr5-pim-opcode-v0.2", path, line_num));
+      throw std::runtime_error(fmt::format("LPDDRPIMConcreteTrace: {} line {} expected a header (schema_version) but found a record; regenerate the trace for the selected backend", path, line_num));
     }
-    require_string(node, "schema_version", path, line_num, "lpddr5-pim-opcode-v0.2");
+    require_string(node, "schema_version", path, line_num, m_expected_schema_version);
+    require_string(node, "dram_class", path, line_num);
+    require_string(node, "dram_class", path, line_num, m_expected_dram_class);
   }
 
   OpcodeRecord parse_record(const YAML::Node& node, const std::string& path, int line_num) {
     // v0.2 records carry only what varies; file-level constants live in the
     // header.  Reject stale v0.1 records that still embed those fields.
     if (node["schema_version"] || node["provenance"]) {
-      throw std::runtime_error(fmt::format("LPDDR5PIMConcreteTrace: {} line {} record must not carry schema_version/provenance; regenerate the trace as lpddr5-pim-opcode-v0.2", path, line_num));
+      throw std::runtime_error(fmt::format("LPDDRPIMConcreteTrace: {} line {} record must not carry schema_version/provenance; regenerate the trace for the selected backend", path, line_num));
     }
     const std::string opcode = require_string(node, "opcode", path, line_num);
     const int repeat = require_int(node, "repeat", path, line_num);
     if (repeat <= 0) {
-      throw std::runtime_error(fmt::format("LPDDR5PIMConcreteTrace: {} line {} repeat must be positive", path, line_num));
+      throw std::runtime_error(fmt::format("LPDDRPIMConcreteTrace: {} line {} repeat must be positive", path, line_num));
     }
     if (repeat > m_max_repeat) {
-      throw std::runtime_error(fmt::format("LPDDR5PIMConcreteTrace: {} line {} repeat exceeds max_repeat {}", path, line_num, m_max_repeat));
+      throw std::runtime_error(fmt::format("LPDDRPIMConcreteTrace: {} line {} repeat exceeds max_repeat {}", path, line_num, m_max_repeat));
     }
     AddrVec_t addr_vec = require_addr_vec(node, path, line_num);
     int64_t addr_byte = -1;
@@ -362,16 +376,16 @@ class LPDDR5PIMConcreteTrace : public IFrontEnd, public Implementation {
     if (node["addr_byte"]) {
       addr_byte = node["addr_byte"].as<int64_t>();
       if (addr_byte < 0) {
-        throw std::runtime_error(fmt::format("LPDDR5PIMConcreteTrace: {} line {} addr_byte must be non-negative", path, line_num));
+        throw std::runtime_error(fmt::format("LPDDRPIMConcreteTrace: {} line {} addr_byte must be non-negative", path, line_num));
       }
     }
     if (node["addr_byte_stride"]) {
       addr_byte_stride = node["addr_byte_stride"].as<int64_t>();
       if (addr_byte_stride <= 0) {
-        throw std::runtime_error(fmt::format("LPDDR5PIMConcreteTrace: {} line {} addr_byte_stride must be positive", path, line_num));
+        throw std::runtime_error(fmt::format("LPDDRPIMConcreteTrace: {} line {} addr_byte_stride must be positive", path, line_num));
       }
       if (addr_byte < 0) {
-        throw std::runtime_error(fmt::format("LPDDR5PIMConcreteTrace: {} line {} addr_byte_stride requires addr_byte", path, line_num));
+        throw std::runtime_error(fmt::format("LPDDRPIMConcreteTrace: {} line {} addr_byte_stride requires addr_byte", path, line_num));
       }
     }
 
@@ -402,22 +416,22 @@ class LPDDR5PIMConcreteTrace : public IFrontEnd, public Implementation {
       request_type_id = m_pim_compute_all_request_type_id;
       s_pim_mac_ab_records++;
     } else {
-      throw std::runtime_error(fmt::format("LPDDR5PIMConcreteTrace: {} line {} unsupported opcode '{}'", path, line_num, opcode));
+      throw std::runtime_error(fmt::format("LPDDRPIMConcreteTrace: {} line {} unsupported opcode '{}'", path, line_num, opcode));
     }
     if (addr_byte >= 0 && opcode != "READ" && opcode != "WRITE") {
-      throw std::runtime_error(fmt::format("LPDDR5PIMConcreteTrace: {} line {} addr_byte is only valid for READ/WRITE", path, line_num));
+      throw std::runtime_error(fmt::format("LPDDRPIMConcreteTrace: {} line {} addr_byte is only valid for READ/WRITE", path, line_num));
     }
     if ((opcode == "READ" || opcode == "WRITE") && addr_byte < 0) {
-      throw std::runtime_error(fmt::format("LPDDR5PIMConcreteTrace: {} line {} READ/WRITE records require addr_byte", path, line_num));
+      throw std::runtime_error(fmt::format("LPDDRPIMConcreteTrace: {} line {} READ/WRITE records require addr_byte", path, line_num));
     }
     if (opcode == "READ" || opcode == "WRITE") {
       AddrVec_t expected_addr_vec = addr_vec_from_byte_address(addr_byte);
       if (addr_vec != expected_addr_vec) {
-        throw std::runtime_error(fmt::format("LPDDR5PIMConcreteTrace: {} line {} READ/WRITE addr_vec must match decomposed addr_byte", path, line_num));
+        throw std::runtime_error(fmt::format("LPDDRPIMConcreteTrace: {} line {} READ/WRITE addr_vec must match decomposed addr_byte", path, line_num));
       }
       if (addr_byte_stride > 0) {
         if (repeat - 1 > (std::numeric_limits<int64_t>::max() - addr_byte) / addr_byte_stride) {
-          throw std::runtime_error(fmt::format("LPDDR5PIMConcreteTrace: {} line {} repeated host byte address overflows int64_t", path, line_num));
+          throw std::runtime_error(fmt::format("LPDDRPIMConcreteTrace: {} line {} repeated host byte address overflows int64_t", path, line_num));
         }
         addr_vec_from_byte_address(addr_byte + static_cast<int64_t>(repeat - 1) * addr_byte_stride);
       }
@@ -441,38 +455,38 @@ class LPDDR5PIMConcreteTrace : public IFrontEnd, public Implementation {
 
     if (node["interleave_depth"] || node["bank_sequence"]) {
       if (opcode != "PIM_MAC") {
-        throw std::runtime_error(fmt::format("LPDDR5PIMConcreteTrace: {} line {} bank interleaving fields are only valid for PIM_MAC", path, line_num));
+        throw std::runtime_error(fmt::format("LPDDRPIMConcreteTrace: {} line {} bank interleaving fields are only valid for PIM_MAC", path, line_num));
       }
       if (!node["bank_sequence"] || !node["bank_sequence"].IsSequence()) {
-        throw std::runtime_error(fmt::format("LPDDR5PIMConcreteTrace: {} line {} PIM_MAC interleaving requires a non-empty bank_sequence", path, line_num));
+        throw std::runtime_error(fmt::format("LPDDRPIMConcreteTrace: {} line {} PIM_MAC interleaving requires a non-empty bank_sequence", path, line_num));
       }
       for (const auto& entry : node["bank_sequence"]) {
         int bank = entry.as<int>();
         if (bank < 0) {
-          throw std::runtime_error(fmt::format("LPDDR5PIMConcreteTrace: {} line {} bank_sequence entries must be non-negative", path, line_num));
+          throw std::runtime_error(fmt::format("LPDDRPIMConcreteTrace: {} line {} bank_sequence entries must be non-negative", path, line_num));
         }
         bank_sequence.push_back(bank);
       }
       if (bank_sequence.empty()) {
-        throw std::runtime_error(fmt::format("LPDDR5PIMConcreteTrace: {} line {} bank_sequence must not be empty", path, line_num));
+        throw std::runtime_error(fmt::format("LPDDRPIMConcreteTrace: {} line {} bank_sequence must not be empty", path, line_num));
       }
 
       if (node["interleave_depth"]) {
         interleave_depth = node["interleave_depth"].as<int>();
         if (interleave_depth < 1) {
-          throw std::runtime_error(fmt::format("LPDDR5PIMConcreteTrace: {} line {} interleave_depth must be >= 1", path, line_num));
+          throw std::runtime_error(fmt::format("LPDDRPIMConcreteTrace: {} line {} interleave_depth must be >= 1", path, line_num));
         }
       }
 
       dependency_count = require_int(node, "dependency_count", path, line_num);
       if (dependency_count < 1) {
-        throw std::runtime_error(fmt::format("LPDDR5PIMConcreteTrace: {} line {} dependency_count must be >= 1", path, line_num));
+        throw std::runtime_error(fmt::format("LPDDRPIMConcreteTrace: {} line {} dependency_count must be >= 1", path, line_num));
       }
 
       if (node["row_count"]) {
         row_count = node["row_count"].as<int>();
         if (row_count < 1) {
-          throw std::runtime_error(fmt::format("LPDDR5PIMConcreteTrace: {} line {} row_count must be >= 1", path, line_num));
+          throw std::runtime_error(fmt::format("LPDDRPIMConcreteTrace: {} line {} row_count must be >= 1", path, line_num));
         }
       }
       if (node["row_start"]) {
@@ -484,20 +498,20 @@ class LPDDR5PIMConcreteTrace : public IFrontEnd, public Implementation {
       if (node["resolved_row_offset"]) {
         resolved_row_offset = node["resolved_row_offset"].as<int>();
         if (resolved_row_offset < 0 || resolved_row_offset >= row_count) {
-          throw std::runtime_error(fmt::format("LPDDR5PIMConcreteTrace: {} line {} resolved_row_offset must be in [0, row_count)", path, line_num));
+          throw std::runtime_error(fmt::format("LPDDRPIMConcreteTrace: {} line {} resolved_row_offset must be in [0, row_count)", path, line_num));
         }
       }
       if (node["resolved_col_offset"]) {
         resolved_col_offset = node["resolved_col_offset"].as<int>();
         if (resolved_col_offset < 0 || resolved_col_offset >= dependency_count) {
-          throw std::runtime_error(fmt::format("LPDDR5PIMConcreteTrace: {} line {} resolved_col_offset must be in [0, dependency_count)", path, line_num));
+          throw std::runtime_error(fmt::format("LPDDRPIMConcreteTrace: {} line {} resolved_col_offset must be in [0, dependency_count)", path, line_num));
         }
       }
 
       if (node["interleave_start_idx"]) {
         interleave_start_idx = node["interleave_start_idx"].as<int>();
         if (interleave_start_idx < 0) {
-          throw std::runtime_error(fmt::format("LPDDR5PIMConcreteTrace: {} line {} interleave_start_idx must be non-negative", path, line_num));
+          throw std::runtime_error(fmt::format("LPDDRPIMConcreteTrace: {} line {} interleave_start_idx must be non-negative", path, line_num));
         }
       }
 
@@ -513,12 +527,12 @@ class LPDDR5PIMConcreteTrace : public IFrontEnd, public Implementation {
 
       if (node["bank_positions"] || node["bank_counts"]) {
         if (!node["bank_positions"] || !node["bank_counts"]) {
-          throw std::runtime_error(fmt::format("LPDDR5PIMConcreteTrace: {} line {} bank_positions and bank_counts must be provided together", path, line_num));
+          throw std::runtime_error(fmt::format("LPDDRPIMConcreteTrace: {} line {} bank_positions and bank_counts must be provided together", path, line_num));
         }
         bank_positions = node["bank_positions"].as<std::vector<int>>();
         bank_counts = node["bank_counts"].as<std::vector<int>>();
         if (bank_positions.size() != bank_counts.size() || bank_positions.empty()) {
-          throw std::runtime_error(fmt::format("LPDDR5PIMConcreteTrace: {} line {} bank_positions and bank_counts must be non-empty lists of equal length", path, line_num));
+          throw std::runtime_error(fmt::format("LPDDRPIMConcreteTrace: {} line {} bank_positions and bank_counts must be non-empty lists of equal length", path, line_num));
         }
         std::vector<bool> seen(m_addr_vec_size, false);
         uint64_t total_banks = 1;
@@ -526,37 +540,37 @@ class LPDDR5PIMConcreteTrace : public IFrontEnd, public Implementation {
           int pos = bank_positions[index];
           int cnt = bank_counts[index];
           if (pos < 0 || pos >= m_addr_vec_size) {
-            throw std::runtime_error(fmt::format("LPDDR5PIMConcreteTrace: {} line {} bank_positions entries must fit within addr_vec_size", path, line_num));
+            throw std::runtime_error(fmt::format("LPDDRPIMConcreteTrace: {} line {} bank_positions entries must fit within addr_vec_size", path, line_num));
           }
           if (seen[pos] || pos == row_level || pos == col_level) {
-            throw std::runtime_error(fmt::format("LPDDR5PIMConcreteTrace: {} line {} bank_positions entries must be unique and must not overlap row_level/col_level", path, line_num));
+            throw std::runtime_error(fmt::format("LPDDRPIMConcreteTrace: {} line {} bank_positions entries must be unique and must not overlap row_level/col_level", path, line_num));
           }
           seen[pos] = true;
           if (cnt <= 0 || cnt != m_level_sizes[pos]) {
             throw std::runtime_error(fmt::format(
-                "LPDDR5PIMConcreteTrace: {} line {} bank_counts[{}]={} must equal configured level '{}' size {}",
+                "LPDDRPIMConcreteTrace: {} line {} bank_counts[{}]={} must equal configured level '{}' size {}",
                 path, line_num, index, cnt, m_level_names[pos], m_level_sizes[pos]));
           }
           if (total_banks > std::numeric_limits<uint64_t>::max() / static_cast<uint64_t>(cnt)) {
-            throw std::runtime_error(fmt::format("LPDDR5PIMConcreteTrace: {} line {} bank count product overflows", path, line_num));
+            throw std::runtime_error(fmt::format("LPDDRPIMConcreteTrace: {} line {} bank count product overflows", path, line_num));
           }
           total_banks *= static_cast<uint64_t>(cnt);
         }
         for (int bank : bank_sequence) {
           if (static_cast<uint64_t>(bank) >= total_banks) {
             throw std::runtime_error(fmt::format(
-                "LPDDR5PIMConcreteTrace: {} line {} bank_sequence entry {} must be in [0, {})",
+                "LPDDRPIMConcreteTrace: {} line {} bank_sequence entry {} must be in [0, {})",
                 path, line_num, bank, total_banks));
           }
         }
       } else {
         if (bank_level < 0 || bank_level >= m_addr_vec_size || bank_level != m_bank_level) {
-          throw std::runtime_error(fmt::format("LPDDR5PIMConcreteTrace: {} line {} bank_level must refer to the resolved Bank level", path, line_num));
+          throw std::runtime_error(fmt::format("LPDDRPIMConcreteTrace: {} line {} bank_level must refer to the resolved Bank level", path, line_num));
         }
         for (int bank : bank_sequence) {
           if (bank >= m_level_sizes[bank_level]) {
             throw std::runtime_error(fmt::format(
-                "LPDDR5PIMConcreteTrace: {} line {} bank_sequence entry {} must fit configured level '{}' size {}",
+                "LPDDRPIMConcreteTrace: {} line {} bank_sequence entry {} must fit configured level '{}' size {}",
                 path, line_num, bank, m_level_names[bank_level], m_level_sizes[bank_level]));
           }
         }
@@ -564,18 +578,18 @@ class LPDDR5PIMConcreteTrace : public IFrontEnd, public Implementation {
 
       if (row_level < 0 || row_level >= m_addr_vec_size || col_level < 0 || col_level >= m_addr_vec_size ||
           row_level != m_row_level || col_level != m_col_level) {
-        throw std::runtime_error(fmt::format("LPDDR5PIMConcreteTrace: {} line {} row_level/col_level must refer to the resolved Row/Column levels", path, line_num));
+        throw std::runtime_error(fmt::format("LPDDRPIMConcreteTrace: {} line {} row_level/col_level must refer to the resolved Row/Column levels", path, line_num));
       }
       if (row_start < 0 || row_start >= m_level_sizes[row_level] ||
           row_count > m_level_sizes[row_level] - row_start) {
         throw std::runtime_error(fmt::format(
-            "LPDDR5PIMConcreteTrace: {} line {} row range [{}, {}) exceeds configured level '{}' size {}",
+            "LPDDRPIMConcreteTrace: {} line {} row range [{}, {}) exceeds configured level '{}' size {}",
             path, line_num, row_start, row_start + row_count, m_level_names[row_level], m_level_sizes[row_level]));
       }
       if (column_start < 0 || column_start >= m_level_sizes[col_level] ||
           dependency_count > m_level_sizes[col_level] - column_start) {
         throw std::runtime_error(fmt::format(
-            "LPDDR5PIMConcreteTrace: {} line {} column range [{}, {}) exceeds configured level '{}' size {}",
+            "LPDDRPIMConcreteTrace: {} line {} column range [{}, {}) exceeds configured level '{}' size {}",
             path, line_num, column_start, column_start + dependency_count, m_level_names[col_level], m_level_sizes[col_level]));
       }
     }
@@ -609,39 +623,87 @@ class LPDDR5PIMConcreteTrace : public IFrontEnd, public Implementation {
 
   void validate_sequence() const {
     enum class Mode { SB, HAB, HAB_PIM };
-    Mode mode = Mode::SB;
-    bool saw_bcast_since_hab = false;
+    struct RankSequenceState {
+      Mode mode = Mode::SB;
+      bool saw_bcast_since_hab = false;
+    };
+    std::vector<RankSequenceState> rank_states(m_level_sizes[m_rank_level]);
+
     for (size_t i = 0; i < m_records.size(); i++) {
-      const std::string& opcode = m_records[i].opcode;
+      const OpcodeRecord& record = m_records[i];
+      const std::string& opcode = record.opcode;
+      std::vector<int> rank_ids = {record.addr_vec[m_rank_level]};
+      if (opcode == "PIM_MAC" && !record.bank_sequence.empty() &&
+          !record.bank_positions.empty()) {
+        auto rank_position = std::find(
+            record.bank_positions.begin(), record.bank_positions.end(), m_rank_level);
+        if (rank_position != record.bank_positions.end()) {
+          const int rank_position_index = static_cast<int>(
+              std::distance(record.bank_positions.begin(), rank_position));
+          rank_ids.clear();
+          for (int flat_bank : record.bank_sequence) {
+            int remaining = flat_bank;
+            int rank_id = record.addr_vec[m_rank_level];
+            for (int index = static_cast<int>(record.bank_positions.size()) - 1;
+                 index >= 0;
+                 index--) {
+              const int coordinate = remaining % record.bank_counts[index];
+              remaining /= record.bank_counts[index];
+              if (index == rank_position_index) {
+                rank_id = coordinate;
+              }
+            }
+            if (std::find(rank_ids.begin(), rank_ids.end(), rank_id) == rank_ids.end()) {
+              rank_ids.push_back(rank_id);
+            }
+          }
+        }
+      }
+
       if (opcode == "READ" || opcode == "WRITE") {
-        if (mode != Mode::SB) {
-          throw std::runtime_error(fmt::format("LPDDR5PIMConcreteTrace: record {} {} requires SB mode", i, opcode));
+        for (int rank_id : rank_ids) {
+          if (rank_states[rank_id].mode != Mode::SB) {
+            throw std::runtime_error(fmt::format("LPDDRPIMConcreteTrace: record {} {} requires SB mode", i, opcode));
+          }
         }
         continue;
       }
       if (opcode == "SB") {
-        mode = Mode::SB;
-        saw_bcast_since_hab = false;
+        for (int rank_id : rank_ids) {
+          rank_states[rank_id].mode = Mode::SB;
+          rank_states[rank_id].saw_bcast_since_hab = false;
+        }
       } else if (opcode == "HAB") {
-        mode = Mode::HAB;
-        saw_bcast_since_hab = false;
+        for (int rank_id : rank_ids) {
+          rank_states[rank_id].mode = Mode::HAB;
+          rank_states[rank_id].saw_bcast_since_hab = false;
+        }
       } else if (opcode == "HAB_PIM") {
-        if (!saw_bcast_since_hab) {
-          throw std::runtime_error(fmt::format("LPDDR5PIMConcreteTrace: record {} HAB_PIM requires a preceding PIM_BCAST in HAB mode", i));
+        for (int rank_id : rank_ids) {
+          if (!rank_states[rank_id].saw_bcast_since_hab) {
+            throw std::runtime_error(fmt::format("LPDDRPIMConcreteTrace: record {} HAB_PIM requires a preceding PIM_BCAST in HAB mode", i));
+          }
+          rank_states[rank_id].mode = Mode::HAB_PIM;
         }
-        mode = Mode::HAB_PIM;
       } else if (opcode == "PIM_BCAST") {
-        if (mode != Mode::HAB) {
-          throw std::runtime_error(fmt::format("LPDDR5PIMConcreteTrace: record {} PIM_BCAST requires HAB mode", i));
+        for (int rank_id : rank_ids) {
+          if (rank_states[rank_id].mode != Mode::HAB) {
+            throw std::runtime_error(fmt::format("LPDDRPIMConcreteTrace: record {} PIM_BCAST requires HAB mode", i));
+          }
+          rank_states[rank_id].saw_bcast_since_hab = true;
         }
-        saw_bcast_since_hab = true;
       } else if (opcode == "PIM_MAC_AB") {
-        if (mode != Mode::HAB_PIM || !saw_bcast_since_hab) {
-          throw std::runtime_error(fmt::format("LPDDR5PIMConcreteTrace: record {} PIM_MAC_AB requires HAB_PIM mode after PIM_BCAST", i));
+        for (int rank_id : rank_ids) {
+          if (rank_states[rank_id].mode != Mode::HAB_PIM ||
+              !rank_states[rank_id].saw_bcast_since_hab) {
+            throw std::runtime_error(fmt::format("LPDDRPIMConcreteTrace: record {} PIM_MAC_AB requires HAB_PIM mode after PIM_BCAST", i));
+          }
         }
       } else if (opcode == "PIM_MAC") {
-        if (mode != Mode::SB) {
-          throw std::runtime_error(fmt::format("LPDDR5PIMConcreteTrace: record {} PIM_MAC requires SB mode", i));
+        for (int rank_id : rank_ids) {
+          if (rank_states[rank_id].mode != Mode::SB) {
+            throw std::runtime_error(fmt::format("LPDDRPIMConcreteTrace: record {} PIM_MAC requires SB mode", i));
+          }
         }
       }
     }
@@ -653,7 +715,7 @@ class LPDDR5PIMConcreteTrace : public IFrontEnd, public Implementation {
     int64_t host_addr = -1;
     if ((record.opcode == "READ" || record.opcode == "WRITE") && record.addr_byte >= 0) {
       if (record.addr_byte_stride > 0 && m_curr_repeat_idx > (std::numeric_limits<int64_t>::max() - record.addr_byte) / record.addr_byte_stride) {
-        throw std::runtime_error("LPDDR5PIMConcreteTrace: repeated host byte address overflows int64_t");
+        throw std::runtime_error("LPDDRPIMConcreteTrace: repeated host byte address overflows int64_t");
       }
       host_addr = record.addr_byte + static_cast<int64_t>(m_curr_repeat_idx) * record.addr_byte_stride;
       addr_vec = addr_vec_from_byte_address(host_addr);
@@ -678,12 +740,12 @@ class LPDDR5PIMConcreteTrace : public IFrontEnd, public Implementation {
 
       if (record.col_level < 0 || record.col_level >= m_addr_vec_size ||
           record.row_level < 0 || record.row_level >= m_addr_vec_size) {
-        throw std::runtime_error("LPDDR5PIMConcreteTrace: interleaving row/column level is outside the resolved hierarchy");
+        throw std::runtime_error("LPDDRPIMConcreteTrace: interleaving row/column level is outside the resolved hierarchy");
       }
       if (col < 0 || col >= m_level_sizes[record.col_level] ||
           row < 0 || row >= m_level_sizes[record.row_level]) {
         throw std::runtime_error(fmt::format(
-            "LPDDR5PIMConcreteTrace: interleaved row/column coordinate out of range (row {} / {}, column {} / {})",
+            "LPDDRPIMConcreteTrace: interleaved row/column coordinate out of range (row {} / {}, column {} / {})",
             row, m_level_sizes[record.row_level], col, m_level_sizes[record.col_level]));
       }
       addr_vec[record.col_level] = col;
@@ -698,14 +760,14 @@ class LPDDR5PIMConcreteTrace : public IFrontEnd, public Implementation {
       } else {
         if (record.bank_level < 0 || record.bank_level >= m_addr_vec_size ||
             flat_bank >= m_level_sizes[record.bank_level]) {
-          throw std::runtime_error("LPDDR5PIMConcreteTrace: interleaved bank coordinate is outside the resolved hierarchy");
+          throw std::runtime_error("LPDDRPIMConcreteTrace: interleaved bank coordinate is outside the resolved hierarchy");
         }
         addr_vec[record.bank_level] = flat_bank;
       }
       for (int index = 0; index < m_addr_vec_size; index++) {
         if (addr_vec[index] < 0 || addr_vec[index] >= m_level_sizes[index]) {
           throw std::runtime_error(fmt::format(
-              "LPDDR5PIMConcreteTrace: interleaved addr_vec[{}] ({})={} must be in [0, {})",
+              "LPDDRPIMConcreteTrace: interleaved addr_vec[{}] ({})={} must be in [0, {})",
               index, m_level_names[index], addr_vec[index], m_level_sizes[index]));
         }
       }
@@ -760,12 +822,12 @@ class LPDDR5PIMConcreteTrace : public IFrontEnd, public Implementation {
 
   AddrVec_t addr_vec_from_byte_address(int64_t address) const {
     if (address < 0) {
-      throw std::runtime_error("LPDDR5PIMConcreteTrace: host byte address must be non-negative");
+      throw std::runtime_error("LPDDRPIMConcreteTrace: host byte address must be non-negative");
     }
     const uint64_t byte_address = static_cast<uint64_t>(address);
     if (byte_address >= m_addressable_capacity_bytes) {
       throw std::runtime_error(fmt::format(
-          "LPDDR5PIMConcreteTrace: host byte address {} exceeds configured addressable capacity {} bytes",
+          "LPDDRPIMConcreteTrace: host byte address {} exceeds configured addressable capacity {} bytes",
           address, m_addressable_capacity_bytes));
     }
     uint64_t transaction = byte_address / static_cast<uint64_t>(m_tx_bytes);
@@ -777,7 +839,7 @@ class LPDDR5PIMConcreteTrace : public IFrontEnd, public Implementation {
     }
     if (transaction != 0) {
       throw std::runtime_error(fmt::format(
-          "LPDDR5PIMConcreteTrace: host byte address {} exceeds configured addressable capacity {} bytes",
+          "LPDDRPIMConcreteTrace: host byte address {} exceeds configured addressable capacity {} bytes",
           address, m_addressable_capacity_bytes));
     }
     return addr_vec;
@@ -785,7 +847,7 @@ class LPDDR5PIMConcreteTrace : public IFrontEnd, public Implementation {
 
   static void require_present(const YAML::Node& node, const std::string& key, const std::string& path, int line_num) {
     if (!node[key]) {
-      throw std::runtime_error(fmt::format("LPDDR5PIMConcreteTrace: {} line {} missing required field '{}'", path, line_num, key));
+      throw std::runtime_error(fmt::format("LPDDRPIMConcreteTrace: {} line {} missing required field '{}'", path, line_num, key));
     }
   }
 
@@ -793,7 +855,7 @@ class LPDDR5PIMConcreteTrace : public IFrontEnd, public Implementation {
     require_present(node, key, path, line_num);
     std::string value = node[key].as<std::string>();
     if (!exact.empty() && value != exact) {
-      throw std::runtime_error(fmt::format("LPDDR5PIMConcreteTrace: {} line {} field '{}' must equal '{}'", path, line_num, key, exact));
+      throw std::runtime_error(fmt::format("LPDDRPIMConcreteTrace: {} line {} field '{}' must equal '{}'", path, line_num, key, exact));
     }
     return value;
   }
@@ -806,15 +868,24 @@ class LPDDR5PIMConcreteTrace : public IFrontEnd, public Implementation {
   AddrVec_t require_addr_vec(const YAML::Node& node, const std::string& path, int line_num) const {
     require_present(node, "addr_vec", path, line_num);
     if (!node["addr_vec"].IsSequence()) {
-      throw std::runtime_error(fmt::format("LPDDR5PIMConcreteTrace: {} line {} addr_vec must be a sequence", path, line_num));
+      throw std::runtime_error(fmt::format("LPDDRPIMConcreteTrace: {} line {} addr_vec must be a sequence", path, line_num));
     }
     AddrVec_t addr_vec = node["addr_vec"].as<std::vector<int>>();
     if (static_cast<int>(addr_vec.size()) != m_addr_vec_size) {
-      throw std::runtime_error(fmt::format("LPDDR5PIMConcreteTrace: {} line {} addr_vec size must equal addr_vec_size", path, line_num));
+      throw std::runtime_error(fmt::format("LPDDRPIMConcreteTrace: {} line {} addr_vec size must equal addr_vec_size", path, line_num));
     }
     validate_addr_vec(addr_vec, path, line_num);
     return addr_vec;
   }
+};
+
+
+class LPDDR5PIMConcreteTrace final : public LPDDRPIMConcreteTrace {
+  RAMULATOR_REGISTER_IMPLEMENTATION_DERIVED(IFrontEnd, LPDDR5PIMConcreteTrace, LPDDRPIMConcreteTrace, "LPDDR5PIMConcreteTrace")
+};
+
+class LPDDR6PIMConcreteTrace final : public LPDDRPIMConcreteTrace {
+  RAMULATOR_REGISTER_IMPLEMENTATION_DERIVED(IFrontEnd, LPDDR6PIMConcreteTrace, LPDDRPIMConcreteTrace, "LPDDR6PIMConcreteTrace")
 };
 
 }  // namespace Ramulator
